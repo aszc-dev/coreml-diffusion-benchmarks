@@ -4,6 +4,7 @@ from sdbench.adapter import UnavailableBackendAdapter
 from sdbench.backends.apple_coreml import AppleCoreMLAdapter
 from sdbench.backends.coreml_diffusion import CoreMLDiffusionAdapter
 from sdbench.backends.diffusers_mps import DiffusersMpsAdapter
+from sdbench.backends.mlx_backend import MlxAdapter
 
 
 def build_default_adapters(
@@ -38,13 +39,18 @@ def build_default_adapters(
             root / "coreml_diffusion",
         )
     )
+    mlx_adapter = (
+        MlxAdapter(Path(checkpoint_path))
+        if checkpoint_path is not None
+        else UnavailableBackendAdapter(
+            "mlx",
+            "provide checkpoint_path when constructing the adapter registry",
+            root / "mlx",
+        )
+    )
     return {
         "apple_coreml": apple_adapter,
         "coreml_diffusion": coreml_diffusion_adapter,
         "diffusers_mps": diffusers_adapter,
-        "mlx": UnavailableBackendAdapter(
-            "mlx",
-            "SD 1.5 MLX UNet support is intentionally implemented last after numerical cross-checks",
-            root / "mlx",
-        ),
+        "mlx": mlx_adapter,
     }
