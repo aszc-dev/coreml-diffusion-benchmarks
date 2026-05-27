@@ -19,14 +19,16 @@ class MlxAdapter:
 
     name = "mlx"
 
-    def __init__(self, checkpoint_path, mx_module=None, unet_module=None, state_dict_loader=None):
+    def __init__(self, checkpoint_path, mx_module=None, unet_module=None, state_dict_loader=None, compile=True):
         self.checkpoint_path = Path(checkpoint_path).expanduser()
         self._mx = mx_module
         self._unet = unet_module
         self._state_dict_loader = state_dict_loader
+        self._compile = compile
         self._weights = None
         self._config = None
         self._dtype = None
+        self._forward = None
 
     def prepare(self, cfg) -> RealizedConfig:
         if cfg.compute_unit != "GPU":
@@ -42,13 +44,23 @@ class MlxAdapter:
         unet = self._load_unet()
         self._dtype = getattr(mx, _DTYPES[cfg.precision])
         self._config = unet.UNetConfig()
-        self._weights = unet.load_weights(self._load_state_dict(), self._dtype)
+        weights = unet.load_weights(self._load_state_dict(), self._dtype)
+        self._weights = weights
+        config = self._config
 
-        # Force the first graph build / Metal compile here, never in step() (R3.4.3).
+        # The forward closes over the (constant) weights; timestep is an array input
+        # so the compiled graph is reused across timesteps instead of re-traced.
+        def forward(sample, context, timestep):
+            return unet.unet_forward(weights, config, sample, timestep, context)
+
+        self._forward = mx.compile(forward) if self._compile else forward
+
+        # Force weight load, the first graph build, and the compile here, never in
+        # step() (R3.4.3). Warm with the same shapes/dtypes the timed steps use.
         latent_size = cfg.resolution // 8
-        warm_latent = mx.zeros((2, self._config.in_channels, latent_size, latent_size), dtype=self._dtype)
-        warm_context = mx.zeros((2, 77, self._config.cross_attention_dim), dtype=self._dtype)
-        warm = unet.unet_forward(self._weights, self._config, warm_latent, 1, warm_context)
+        warm_latent = mx.zeros((2, config.in_channels, latent_size, latent_size), dtype=self._dtype)
+        warm_context = mx.zeros((2, 77, config.cross_attention_dim), dtype=self._dtype)
+        warm = self._forward(warm_latent, warm_context, mx.array(1.0))
         mx.eval(warm)
 
         return RealizedConfig(
@@ -62,16 +74,16 @@ class MlxAdapter:
         if self._weights is None:
             raise RuntimeError("Adapter must be prepared before step()")
         mx = self._load_mx()
-        unet = self._load_unet()
         sample = mx.array(np.asarray(latent, dtype=np.float32)).astype(self._dtype)
         context = mx.array(np.asarray(text_embedding, dtype=np.float32)).astype(self._dtype)
-        output = unet.unet_forward(self._weights, self._config, sample, int(timestep), context)
+        output = self._forward(sample, context, mx.array(float(timestep)))
         mx.eval(output)  # force materialization before returning (R3.4.2)
         return np.asarray(output, dtype=np.float32)
 
     def teardown(self) -> None:
         self._weights = None
         self._config = None
+        self._forward = None
         mx = self._mx
         if mx is not None and hasattr(mx, "clear_cache"):
             mx.clear_cache()

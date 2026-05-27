@@ -110,7 +110,11 @@ def _conv(x, weight, bias, stride, padding):
 def _timestep_embedding(timestep, dim):
     half = dim // 2
     freqs = mx.exp(-math.log(10000.0) * mx.arange(half, dtype=mx.float32) / half)
-    args = mx.array(float(timestep), dtype=mx.float32) * freqs
+    # timestep is passed as a 0-d mx array so a compiled graph is not re-traced
+    # when its value changes (a recompile inside the timed loop would be invalid).
+    if not isinstance(timestep, mx.array):
+        timestep = mx.array(float(timestep))
+    args = timestep.astype(mx.float32) * freqs
     # flip_sin_to_cos=True, freq_shift=0 -> [cos, sin]
     return mx.concatenate([mx.cos(args), mx.sin(args)])
 
@@ -127,12 +131,11 @@ def _attention(weights, prefix, hidden, context, num_heads):
     k = k.reshape(b, lk, num_heads, d).transpose(0, 2, 1, 3)
     v = v.reshape(b, lk, num_heads, d).transpose(0, 2, 1, 3)
 
-    # Attention scores/softmax in fp32; fp16 accumulation here is the other large
-    # contributor to the equivalence error.
+    # Fused SDPA already accumulates scores/softmax in fp32 internally, so the
+    # fp16 inputs are safe from the SD 1.5 attention overflow and no manual upcast
+    # is needed (an explicit fp32 cast here only doubled the attention cost).
     scale = 1.0 / math.sqrt(d)
-    out = mx.fast.scaled_dot_product_attention(
-        q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=scale
-    ).astype(q.dtype)
+    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
     out = out.transpose(0, 2, 1, 3).reshape(b, lq, c)
     return _channel_linear(out, weights[f"{prefix}.to_out.0.weight"], weights[f"{prefix}.to_out.0.bias"])
 

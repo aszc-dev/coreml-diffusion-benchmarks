@@ -37,6 +37,9 @@ class FakeMx:
     def eval(self, *_args):
         self.eval_calls += 1
 
+    def compile(self, fn):
+        return fn
+
     def clear_cache(self):
         self.cleared = True
 
@@ -57,7 +60,7 @@ class FakeUnetModule:
 
     def unet_forward(self, weights, cfg, sample, timestep, context):
         # Echo the input latent so the adapter's NCHW passthrough is observable.
-        self.forward_calls.append((timestep, np.asarray(sample).shape))
+        self.forward_calls.append((float(np.asarray(timestep)), np.asarray(sample).shape))
         return FakeArray(np.asarray(sample) + 1.0)
 
 
@@ -112,7 +115,7 @@ def test_step_forces_eval_and_returns_host_nchw(tmp_path):
     assert output.shape == (2, 4, 64, 64)
     np.testing.assert_array_equal(output, latent + 1.0)
     assert mx.eval_calls == evals_after_prepare + 1  # step forces eval before returning (R3.4.2)
-    assert unet.forward_calls[-1][0] == 500
+    assert unet.forward_calls[-1][0] == 500.0
 
 
 def test_step_before_prepare_raises(tmp_path):
