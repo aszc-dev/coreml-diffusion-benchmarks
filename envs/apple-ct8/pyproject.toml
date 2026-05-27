@@ -1,0 +1,25 @@
+[project]
+name = "sdbench-apple-ct8"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "coremltools>=8,<9",
+  "diffusers[torch]==0.30.2",
+  "huggingface-hub==0.24.6",
+  "invisible-watermark",
+  "matplotlib",
+  "numpy<1.24",
+  "python_coreml_stable_diffusion @ git+https://github.com/apple/ml-stable-diffusion.git",
+  "safetensors",
+  "scikit-learn==1.5.1",
+  "scipy",
+  "torch==2.5.0",
+  "transformers==4.44.2",
+]
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = false

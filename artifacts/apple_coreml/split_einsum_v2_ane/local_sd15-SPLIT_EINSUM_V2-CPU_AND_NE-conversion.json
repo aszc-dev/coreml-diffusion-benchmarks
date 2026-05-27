@@ -1,0 +1,15 @@
+{
+  "attention": "SPLIT_EINSUM_V2",
+  "backend": "apple_coreml",
+  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
+  "compute_unit": "CPU_AND_NE",
+  "convert_s": 50.33243583299918,
+  "coremltools_major": 8,
+  "first_load_compile_s": 1.372063042013906,
+  "graph_capture_s": 34.61607004201505,
+  "mlmodelc_path": "artifacts/apple_coreml/split_einsum_v2_ane/Stable_Diffusion_version_local_sd15_unet.mlmodelc",
+  "mlpackage_path": "artifacts/apple_coreml/split_einsum_v2_ane/Stable_Diffusion_version_local_sd15_unet.mlpackage",
+  "pipeline_load_s": 3.0332794999703765,
+  "resolution": 512,
+  "status": "ok"
+}

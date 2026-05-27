@@ -1,0 +1,152 @@
+# config/matrix.yaml
+# Canonical, committed run matrix for the SD 1.5 UNet cross-backend benchmark.
+# Adding/removing a cell here requires NO code change (R1.2).
+#
+# Per-cell schema:
+#   id          stable key (used by `run-cell --cell <id>` and as the table row key)
+#   label       human caption for generated tables
+#   backend     apple_coreml | coreml_diffusion | diffusers_mps | mlx
+#   compute_unit  CPU_AND_NE | CPU_AND_GPU | MPS | GPU
+#   attention   SPLIT_EINSUM_V2 | ORIGINAL | NATIVE   (NATIVE = framework's own attention)
+#   precision   fp16 | w4 | w8 | w8a8
+#   resolution  pixels (square); 512 is the only required-to-pass target (R0.5)
+#   enabled     bool; disabled cells are skipped
+#   requires    optional capability gate; if the host lacks it the cell is recorded N/A, not failed (R8.4)
+#   notes       optional
+#
+# Golden invariants this matrix exists to serve: UNet only (R0.1), one checkpoint for all
+# backends (R0.2), shared input (R4.1), discard cold run + >=10 timed iters + median (R5),
+# per-engine power relative-only (R6), equivalence flags-not-drops (R7).
+
+# Same weights for every backend. An HF id is convenient; a local single-file .safetensors
+# is preferred for byte-identical weights across all four backends (R0.2, R4.1).
+checkpoint: ${SD15_CHECKPOINT}
+# Example HF source for obtaining the local file:
+# stable-diffusion-v1-5/stable-diffusion-v1-5
+
+seed: 0                 # single seed, recorded in the manifest (R1.4)
+warmup: 1               # cold runs discarded before timing (R5.2)
+iterations: 10          # timed iterations after warmup; median + IQR reported (R5.3, R5.4)
+resolution_default: 512
+
+equivalence:            # MSE + cosine vs reference; flags, never drops (R7)
+  reference:            # ground truth = diffusers UNet, fp32, on CPU (R3.3.2)
+    backend: diffusers_mps
+    device: cpu
+    precision: fp32
+  mse_max: 1.0e-3
+  cosine_min: 0.999
+
+power:                  # per-engine, baseline-subtracted, relative-only (R6)
+  interval_ms: 100      # fine enough to resolve a single ~200-300 ms UNet step (R6.1)
+  baseline_seconds: 2   # idle window captured before and after the active window (R6.2)
+  samplers: [cpu_power, gpu_power, ane_power]
+
+thermal:
+  abort_on_throttle: true   # detect/flag/abort cells run while throttled (R5.6)
+
+cells:
+
+  # ----- Backend 1: Apple ml-stable-diffusion + coremltools 8 (R3.1) -----
+  - id: apple-ane-fp16
+    label: "Apple ct8 · ANE · split-einsum-v2 · fp16"
+    backend: apple_coreml
+    compute_unit: CPU_AND_NE
+    attention: SPLIT_EINSUM_V2
+    precision: fp16
+    resolution: 512
+    enabled: true
+
+  - id: apple-gpu-fp16
+    label: "Apple ct8 · GPU · original · fp16"
+    backend: apple_coreml
+    compute_unit: CPU_AND_GPU
+    attention: ORIGINAL
+    precision: fp16
+    resolution: 512
+    enabled: true
+
+  # ----- Backend 2: coreml-diffusion + coremltools 9 (R3.2) -----
+  # Same conversion METHOD as Apple (custom diffusers pipeline + trace API); the only
+  # intended difference vs Backend 1 is the toolchain version. That ct8-vs-ct9 contrast
+  # (head-to-head on matching cells below) is the primary purpose of the study.
+  - id: ours-ane-fp16
+    label: "Ours ct9 · ANE · split-einsum-v2 · fp16"
+    backend: coreml_diffusion
+    compute_unit: CPU_AND_NE
+    attention: SPLIT_EINSUM_V2
+    precision: fp16
+    resolution: 512
+    enabled: true
+
+  - id: ours-gpu-fp16
+    label: "Ours ct9 · GPU · original · fp16"
+    backend: coreml_diffusion
+    compute_unit: CPU_AND_GPU
+    attention: ORIGINAL
+    precision: fp16
+    resolution: 512
+    enabled: true
+
+  - id: ours-ane-w4
+    label: "Ours ct9 · ANE · split-einsum-v2 · 4-bit palettized"
+    backend: coreml_diffusion
+    compute_unit: CPU_AND_NE
+    attention: SPLIT_EINSUM_V2
+    precision: w4
+    resolution: 512
+    enabled: true
+    notes: "Quantization-efficiency point: compared against ours-ane-fp16 (R8.3)."
+
+  - id: ours-ane-w8a8
+    label: "Ours ct9 · ANE · split-einsum-v2 · W8A8 (activation quant)"
+    backend: coreml_diffusion
+    compute_unit: CPU_AND_NE
+    attention: SPLIT_EINSUM_V2
+    precision: w8a8
+    resolution: 512
+    enabled: false
+    requires: { ane_activation_quant: true }   # M4 / A17 Pro class; else recorded N/A (R3.2.4, R8.4)
+    notes: "Calibration-based activation quantization. Enable only on supported hardware."
+
+  # ----- Backend 3: diffusers on MPS (R3.3) — also the numerical reference backend -----
+  - id: diffusers-mps-fp16
+    label: "diffusers · MPS · fp16"
+    backend: diffusers_mps
+    compute_unit: MPS
+    attention: NATIVE
+    precision: fp16
+    resolution: 512
+    enabled: true
+
+  - id: diffusers-mps-fp16-compile
+    label: "diffusers · MPS · fp16 · torch.compile"
+    backend: diffusers_mps
+    compute_unit: MPS
+    attention: NATIVE
+    precision: fp16
+    resolution: 512
+    enabled: false
+    requires: { torch_compile: true }   # separate labeled cell, PyTorch >= 2.4 (R3.3.3)
+    notes: "Optional. Keep off for the first clean baseline runs."
+
+  # ----- Backend 4: MLX (R3.4) -----
+  - id: mlx-gpu-fp16
+    label: "MLX · GPU · fp16"
+    backend: mlx
+    compute_unit: GPU
+    attention: NATIVE
+    precision: fp16
+    resolution: 512
+    enabled: true
+    notes: "SD 1.5 config supplied by the adapter; upstream mlx-examples ships 2.1-base/SDXL/FLUX only (R3.4.1). step() must force mx.eval (R3.4.2)."
+
+  - id: mlx-gpu-q8
+    label: "MLX · GPU · 8-bit (mlx-native quant)"
+    backend: mlx
+    compute_unit: GPU
+    attention: NATIVE
+    precision: w8
+    resolution: 512
+    enabled: false
+    notes: "Optional MLX-native quantization point (R3.4.4)."
