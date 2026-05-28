@@ -26,7 +26,7 @@ def test_run_wrapper_dry_run_builds_full_matrix_command(tmp_path):
     )
 
     assert "powermetrics --samplers cpu_power,gpu_power,ane_power -i 100" in result.stdout
-    assert "caffeinate -dimsu uv run sdbench run --config config/test.yaml --shared-input input.npz" in result.stdout
+    assert "caffeinate -dimsu uv run sdbench run-matrix --config config/test.yaml --shared-input input.npz" in result.stdout
     assert "run-cell" not in result.stdout
 
 

@@ -66,4 +66,4 @@ Adapters take their heavy dependencies via constructor injection (e.g. `Diffuser
 ## Conventions
 
 - English only for all code, comments, configs, and docs.
-- Conversion-timing fields in records (`graph_capture_s`, `convert_s`, `first_load_compile_s`) are currently `None` because CoreML/MLX cells are gated on converted artifacts; they are wired through `results.py` and populated once conversion drivers feed them in.
+- Conversion-timing fields in records (`graph_capture_s`, `convert_s`, `first_load_compile_s`) are populated by `sdbench run` from each build's conversion-timing JSON (via `tui/convert_orchestrator.conversion_timings_by_cell`); they stay `None` for cells with no converted CoreML build (e.g. mlx, diffusers_mps).

@@ -112,7 +112,7 @@ elif [[ -n "$BACKEND" ]]; then
   )
 else
   BENCHMARK_CMD=(
-    uv run sdbench run
+    uv run sdbench run-matrix
     --config "$CONFIG"
     --shared-input "$SHARED_INPUT"
     --results-dir "$RESULTS_DIR"

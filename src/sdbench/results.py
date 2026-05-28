@@ -36,6 +36,9 @@ class BenchmarkRecord:
     # Defaulted so existing constructors and older JSONL records remain valid.
     active_window_start_s: float | None = None
     active_window_end_s: float | None = None
+    # Provenance fingerprint digest of the run that produced this record (R10.4/R11.3).
+    # Lets a datapoint be traced to its checkpoint + pinned dependency set.
+    provenance_digest: str | None = None
 
 
 def write_jsonl(records: list[BenchmarkRecord], path: str | Path) -> None:
@@ -53,6 +56,26 @@ def load_jsonl(path: str | Path) -> list[BenchmarkRecord]:
             if line.strip():
                 records.append(BenchmarkRecord(**json.loads(line)))
     return records
+
+
+def upsert_jsonl(records: list[BenchmarkRecord], path: str | Path, key=None) -> list[BenchmarkRecord]:
+    """Merge records into an existing JSONL, replacing rows with a matching key.
+
+    Keyed by ``cell_id`` by default: running a single cell updates only its row
+    and leaves the rest of the matrix intact, instead of clobbering the whole
+    file. Existing rows keep their order; genuinely new cells are appended.
+    """
+    keyfn = key or (lambda record: record.cell_id)
+    output = Path(path)
+    merged: dict = {}
+    if output.exists():
+        for record in load_jsonl(output):
+            merged[keyfn(record)] = record
+    for record in records:
+        merged[keyfn(record)] = record
+    materialized = list(merged.values())
+    write_jsonl(materialized, output)
+    return materialized
 
 
 def write_summary_tables(records: list[BenchmarkRecord], output_dir: str | Path) -> None:

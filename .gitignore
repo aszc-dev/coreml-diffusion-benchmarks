@@ -16,5 +16,8 @@ assets/shared_input/*.npz
 
 *.log
 
+# Per-user TUI state (run plan saved by `sdbench config`).
+.sdbench/
+
 # Internal design notes, not for the public repo
 tui.md

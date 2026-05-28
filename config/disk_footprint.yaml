@@ -1,0 +1,7 @@
+cells:
+  apple-ane-fp16: 1722195455
+  apple-gpu-fp16: 1720035533
+  ours-ane-fp16: 1722171511
+  ours-ane-w4: 433656366
+  ours-gpu-fp16: 1720102731
+measured_at: '2026-05-27T20:36:05Z'

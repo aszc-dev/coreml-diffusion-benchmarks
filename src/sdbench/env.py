@@ -16,12 +16,20 @@ class EnvironmentManifest:
     checkpoint_sha256: str | None
     seed: int
     run_conditions: str
+    # Pinned versions of the isolated conversion environments and the tool itself,
+    # so the version-sensitive comparison is fully recorded (R10.4, R11.3). Defaulted
+    # for back-compat with older manifests/callers.
+    tool_version: str | None = None
+    conversion_env_versions: dict[str, dict[str, str]] | None = None
+    provenance_digest: str | None = None
 
 
 def collect_environment_manifest(
     seed: int,
     run_conditions: str,
     checkpoint_path: str | Path | None = None,
+    workspace=None,
+    provenance_digest: str | None = None,
 ) -> EnvironmentManifest:
     packages = {}
     for name in ["numpy", "torch", "coremltools", "mlx", "diffusers", "psutil"]:
@@ -30,6 +38,18 @@ def collect_environment_manifest(
         except metadata.PackageNotFoundError:
             packages[name] = "not-installed"
     resolved_checkpoint = Path(checkpoint_path).expanduser() if checkpoint_path else None
+
+    tool_version = None
+    conversion_env_versions = None
+    if workspace is not None:
+        from sdbench.provenance import parse_lock_versions, tool_version as _tool_version
+
+        tool_version = _tool_version()
+        conversion_env_versions = {
+            "apple_ct8": parse_lock_versions(workspace.root / "envs" / "apple-ct8" / "uv.lock"),
+            "team_ct9": parse_lock_versions(workspace.root / "envs" / "team-ct9" / "uv.lock"),
+        }
+
     return EnvironmentManifest(
         chip_model=platform.processor() or platform.machine(),
         os_version=platform.platform(),
@@ -39,6 +59,9 @@ def collect_environment_manifest(
         checkpoint_sha256=_sha256(resolved_checkpoint) if resolved_checkpoint and resolved_checkpoint.is_file() else None,
         seed=seed,
         run_conditions=run_conditions,
+        tool_version=tool_version,
+        conversion_env_versions=conversion_env_versions,
+        provenance_digest=provenance_digest,
     )
 
 

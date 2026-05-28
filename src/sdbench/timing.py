@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable
 
 import numpy as np
 
@@ -34,19 +34,28 @@ def run_timed_steps(
     warmup: int,
     iterations: int,
     clock_values: Iterable[float] | None = None,
+    on_warmup: Callable[[int, int, float], None] | None = None,
+    on_timed: Callable[[int, int, float], None] | None = None,
 ) -> TimingResult:
     if iterations < 10:
         raise ValueError("Benchmark must run at least 10 timed iterations")
 
     clock = _Clock(clock_values)
     output = latent
-    for _ in range(warmup):
-        output = np.asarray(adapter.step(latent, timestep, text_embedding))
+    for w in range(warmup):
+        # Only touch the clock when reporting, so the injected-clock budget used by
+        # tests (sized for the timed iterations) is untouched on the default path.
+        if on_warmup is not None:
+            start = clock.now()
+            output = np.asarray(adapter.step(latent, timestep, text_embedding))
+            on_warmup(w + 1, warmup, (clock.now() - start) * 1000.0)
+        else:
+            output = np.asarray(adapter.step(latent, timestep, text_embedding))
 
     windows: list[IterationWindow] = []
     wall_start: float | None = None
     wall_end: float | None = None
-    for _ in range(iterations):
+    for i in range(iterations):
         if wall_start is None:
             wall_start = time.time()
         start = clock.now()
@@ -54,6 +63,8 @@ def run_timed_steps(
         end = clock.now()
         wall_end = time.time()
         windows.append(IterationWindow(start_s=start, end_s=end, latency_ms=(end - start) * 1000.0))
+        if on_timed is not None:
+            on_timed(i + 1, iterations, windows[-1].latency_ms)
 
     latencies = np.array([window.latency_ms for window in windows], dtype=np.float64)
     q1, q3 = np.percentile(latencies, [25, 75])

@@ -6,6 +6,7 @@ from sdbench.adapter import RealizedConfig
 from sdbench.config import BenchmarkConfig, CellConfig
 from sdbench.equivalence import compare_to_reference
 from sdbench.inputs import SharedInput
+from sdbench.progress import NullReporter, RunReporter
 from sdbench.results import BenchmarkRecord
 from sdbench.sizing import ModelSize
 from sdbench.timing import run_timed_steps
@@ -17,11 +18,17 @@ def run_matrix(
     adapters: dict[str, object],
     run_id: str,
     results_dir: str | Path,
+    reporter: RunReporter | None = None,
 ) -> list[BenchmarkRecord]:
+    reporter = reporter or NullReporter()
     records = []
     reference = shared_input.latent
-    for cell in cfg.cells:
-        records.append(_run_cell(cfg, cell, shared_input, adapters, run_id, reference))
+    total = len(cfg.cells)
+    reporter.run_start(total)
+    for index, cell in enumerate(cfg.cells):
+        reporter.cell_start(cell.id, index, total)
+        records.append(_run_cell(cfg, cell, shared_input, adapters, run_id, reference, reporter))
+    reporter.run_done(records)
     return records
 
 
@@ -32,11 +39,13 @@ def _run_cell(
     adapters: dict[str, object],
     run_id: str,
     reference: np.ndarray,
+    reporter: RunReporter,
 ) -> BenchmarkRecord:
     adapter = adapters[cell.backend]
     realized: RealizedConfig | None = None
     try:
         realized = adapter.prepare(cell)
+        reporter.cell_prepared(cell.id, realized.compute_unit)
         timing = run_timed_steps(
             adapter=adapter,
             latent=shared_input.latent,
@@ -44,6 +53,8 @@ def _run_cell(
             text_embedding=shared_input.text_embedding,
             warmup=cfg.warmup,
             iterations=cfg.iterations,
+            on_warmup=lambda i, total, ms: reporter.warmup_step(cell.id, i, total, ms),
+            on_timed=lambda i, total, ms: reporter.timed_step(cell.id, i, total, ms),
         )
         reference_output = _reference_output(adapter, shared_input, reference)
         equivalence = compare_to_reference(
@@ -55,7 +66,7 @@ def _run_cell(
         # Power is filled in post-hoc from the powermetrics capture (see cli.py `power`
         # command); the sampler runs concurrently, so samples don't exist yet here.
         model_size = _model_size(adapter)
-        return BenchmarkRecord(
+        record = BenchmarkRecord(
             run_id=run_id,
             cell_id=cell.id,
             backend=cell.backend,
@@ -85,7 +96,10 @@ def _run_cell(
             active_window_start_s=timing.active_wall_start_s,
             active_window_end_s=timing.active_wall_end_s,
         )
+        reporter.cell_done(record)
+        return record
     except Exception as exc:
+        reporter.cell_failed(cell.id, str(exc))
         return _failed_record(run_id, cell, realized, str(exc))
     finally:
         adapter.teardown()

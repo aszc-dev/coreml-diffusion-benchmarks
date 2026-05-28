@@ -1,0 +1,15 @@
+{
+  "attention": "ORIGINAL",
+  "backend": "apple_coreml",
+  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
+  "compute_unit": "CPU_AND_GPU",
+  "convert_s": 25.560802291998698,
+  "coremltools_major": 8,
+  "first_load_compile_s": 0.46161516699794447,
+  "graph_capture_s": 15.047148625002592,
+  "mlmodelc_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/apple_coreml/original_gpu/Stable_Diffusion_version_local_sd15_unet.mlmodelc",
+  "mlpackage_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/apple_coreml/original_gpu/Stable_Diffusion_version_local_sd15_unet.mlpackage",
+  "pipeline_load_s": 2.937737583000853,
+  "resolution": 512,
+  "status": "ok"
+}

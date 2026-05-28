@@ -1,0 +1,17 @@
+{
+  "attention": "ORIGINAL",
+  "backend": "coreml_diffusion",
+  "batch_size": 2,
+  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
+  "compute_unit": "CPU_AND_GPU",
+  "convert_s": 24.71512658300344,
+  "coremltools_major": 9,
+  "first_load_compile_s": 0.4116219999996247,
+  "graph_capture_s": 50.95930337499885,
+  "mlmodelc_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/coreml_diffusion/original_gpu/local_sd15-ORIGINAL-fp16.mlmodelc",
+  "mlpackage_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/coreml_diffusion/original_gpu/local_sd15-ORIGINAL-fp16.mlpackage",
+  "precision": "fp16",
+  "quantize": "none",
+  "resolution": 512,
+  "status": "ok"
+}

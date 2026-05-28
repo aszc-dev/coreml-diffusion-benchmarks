@@ -1,0 +1,46 @@
+{
+  "digest": "5506dbd7728dacc1073f450969d67e2b48de4a9629ff45712aa8bd6693b2d0c2",
+  "fingerprint": {
+    "checkpoint_sha256": "6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa",
+    "chip": "Apple M2 Pro",
+    "convert_ct8_deps": {
+      "coremltools": "8.3.0",
+      "diffusers": "0.30.2",
+      "mlx": "0.31.2",
+      "numpy": "1.23.5",
+      "torch": "2.5.0",
+      "transformers": "4.44.2"
+    },
+    "convert_ct9_deps": {
+      "coremltools": "9.0",
+      "diffusers": "0.32.2",
+      "numpy": "2.1.3",
+      "torch": "2.7.0",
+      "transformers": "4.49.0"
+    },
+    "harness_deps": {
+      "coremltools": "8.3.0",
+      "diffusers": "0.32.2",
+      "mlx": "0.31.2",
+      "numpy": "2.1.3",
+      "torch": "2.6.0",
+      "transformers": "4.49.0"
+    },
+    "tool_version": "0.1.0"
+  },
+  "run_ids": [
+    "5bc5039c-579a-41ca-97a4-850bfec38df9",
+    "00de454c-326a-4091-8940-ee577584b324",
+    "f260b747-4c13-4ad4-a7f6-bdc3e28af5de",
+    "3363be06-aa67-43e4-8f82-f7bd773cf618",
+    "30a67e66-6772-4035-8f7e-97239625e44b",
+    "bb707495-8f77-4e99-9955-000d97ac635f",
+    "76d7213d-e6b5-4a08-806b-46351b8bc713",
+    "1c13a881-e318-477d-9b74-9a4513d514f7",
+    "ad938cf3-995f-4e42-b66d-2b2b1c8d6d59",
+    "f71b136e-a307-4dd4-8c96-f234d3ae4d2f",
+    "6703bd53-4669-418c-9cf4-6184f6c5223d",
+    "9869cddf-d9a7-4b35-aed0-7a5761bb3fe9"
+  ],
+  "updated_s": 1779984402.597125
+}

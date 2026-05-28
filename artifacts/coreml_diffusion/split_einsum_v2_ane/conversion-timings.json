@@ -1,0 +1,17 @@
+{
+  "attention": "SPLIT_EINSUM_V2",
+  "backend": "coreml_diffusion",
+  "batch_size": 2,
+  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
+  "compute_unit": "CPU_AND_NE",
+  "convert_s": 38.76215541599959,
+  "coremltools_major": 9,
+  "first_load_compile_s": 1.2038762500014855,
+  "graph_capture_s": 29.388381750002736,
+  "mlmodelc_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/coreml_diffusion/split_einsum_v2_ane/local_sd15-SPLIT_EINSUM_V2-fp16.mlmodelc",
+  "mlpackage_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/coreml_diffusion/split_einsum_v2_ane/local_sd15-SPLIT_EINSUM_V2-fp16.mlpackage",
+  "precision": "fp16",
+  "quantize": "none",
+  "resolution": 512,
+  "status": "ok"
+}
