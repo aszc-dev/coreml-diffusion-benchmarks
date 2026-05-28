@@ -108,11 +108,12 @@ def test_powermetrics_command_runs_under_sudo_non_interactive():
     assert "cpu_power,gpu_power" in cmd
 
 
-def test_default_spawn_isolates_subprocess_from_controlling_tty(monkeypatch):
-    # The sampler / caffeinate MUST be detached from our session and have stdin
-    # closed — otherwise the child can write to /dev/tty and bypass every
-    # stdout/stderr redirect we install. This regression-guards the actual fix
-    # for the "C-c on the run fixes the screen but the run keeps going" bug.
+def test_default_spawn_muzzles_subprocess_channels(monkeypatch):
+    # The sampler / caffeinate run with stdin AND stdout AND stderr closed to /dev/null
+    # so the child has no normal channel to write to our terminal. We do NOT use
+    # start_new_session=True — that would detach the child from the controlling tty
+    # and break macOS sudo's tty-scoped credential cache, causing `sudo -n` to fail
+    # silently and powermetrics to never start (no plist, no power data).
     import subprocess
 
     from sdbench.tui import power_session
@@ -127,10 +128,10 @@ def test_default_spawn_isolates_subprocess_from_controlling_tty(monkeypatch):
     monkeypatch.setattr(power_session.subprocess, "Popen", _FakePopen)
     power_session._default_spawn(["caffeinate"])
 
-    assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
     assert captured["kwargs"]["stdout"] is subprocess.DEVNULL
     assert captured["kwargs"]["stderr"] is subprocess.DEVNULL
+    assert "start_new_session" not in captured["kwargs"] or captured["kwargs"]["start_new_session"] is False
 
 
 class _FakeProc:

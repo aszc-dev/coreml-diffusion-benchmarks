@@ -44,16 +44,18 @@ def powermetrics_command(log_path: str | Path, interval_ms: int, samplers: list[
 
 
 def _default_spawn(argv: list[str]) -> "subprocess.Popen":
-    # start_new_session=True puts the child in its own session with NO controlling
-    # tty — `/dev/tty` writes from it (powermetrics status, sudo warnings) have
-    # nowhere to go and cannot bypass our redirects to corrupt the Live frame.
-    # stdin=DEVNULL closes the last channel into our terminal.
+    # stdin=DEVNULL + stdout/stderr=DEVNULL muzzles the child's normal channels.
+    # We deliberately do NOT pass start_new_session=True: macOS sudo caches
+    # credentials per controlling tty (default `timestamp_type=tty`), and a
+    # setsid-detached child can no longer find that cache — `sudo -n` then fails
+    # silently and powermetrics never starts. Staying in our session keeps the
+    # tty-scoped cache reachable. With `sudo -n` and cached creds, sudo runs
+    # without ever prompting and powermetrics writes its plist as expected.
     return subprocess.Popen(
         argv,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
     )
 
 
