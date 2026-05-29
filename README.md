@@ -9,18 +9,18 @@ The benchmark measures only the UNet. VAE and CLIP/text-encoder execution are ou
 The tool ships a guided terminal flow. Run it with no arguments and it walks you through getting the checkpoint, converting artifacts, configuring a run, running it, and cleaning up:
 
 ```bash
-uvx 'coreml-diffusion-benchmarks[bench]'        # one-off, no install
+uvx coreml-diffusion-benchmarks                  # one-off, no install
 # or
-uv tool install 'coreml-diffusion-benchmarks[bench]'
-sdbench                                           # guided menu
+uv tool install coreml-diffusion-benchmarks
+cdbench                                           # guided menu (sdbench is a legacy alias)
 ```
 
-`uv tool install` (or `uvx`) without `[bench]` installs only the lightweight front-end so it starts instantly; the heavy benchmark stack (torch, coremltools, …) is the `bench` extra and is needed for actual conversion and runs. The guided flow tells you when it is missing and how to add it.
+A single install provisions the full benchmark stack (torch, coremltools, diffusers, mlx, …). There is no light-only mode — every meaningful flow (`convert`, `run`, `prepare-input`, `download`) needs the full stack, so splitting the install only confused contributors who saw a menu but couldn't actually run anything.
 
 ## From a repository checkout
 
 ```bash
-uv sync                                           # full dev stack (front-end + bench)
+uv sync                                           # full dev stack
 ```
 
 CoreML conversion toolchains are isolated because `coremltools` 8.x and 9.x cannot be imported into the same Python environment. The conversion driver runs each in its own pinned uv project:
@@ -35,8 +35,8 @@ uv sync --project envs/team-ct9
 The same SD 1.5 weights must back every backend, so the checkpoint is pinned by SHA-256 and verified whether you point at a local file or have it downloaded:
 
 ```bash
-sdbench download --checkpoint /path/to/v1-5-pruned-emaonly.safetensors   # verify a local file
-sdbench download --download                                              # fetch + verify from the official HF repo
+cdbench download --checkpoint /path/to/v1-5-pruned-emaonly.safetensors   # verify a local file
+cdbench download --download                                              # fetch + verify from the official HF repo
 ```
 
 Alternatively set `SD15_CHECKPOINT` to the local `.safetensors` path; it is recorded (with its hash) in the per-run environment manifest. A SHA mismatch is fatal — the harness refuses to benchmark non-identical weights.
@@ -45,17 +45,17 @@ Alternatively set `SD15_CHECKPOINT` to the local `.safetensors` path; it is reco
 
 | Command | Purpose |
 | --- | --- |
-| `sdbench` | Guided menu (no arguments). |
-| `sdbench download` | Resolve and SHA-verify the checkpoint. |
-| `sdbench convert` | Convert CoreML artifacts in the isolated ct8/ct9 envs (cached by checkpoint SHA). |
-| `sdbench measure-disk` | Measure converted-artifact sizes into `config/disk_footprint.yaml`. |
-| `sdbench config` | Interactively select cells, power, and verbosity; save a run plan. |
-| `sdbench run` | Run with live progress and minimal-root power; results are upserted. |
-| `sdbench verify` | Check that all results share one provenance fingerprint matching this environment. |
-| `sdbench cleanup` | Reclaim generated state (models, captures, results) with measured sizes. |
-| `sdbench tables` | Regenerate publication tables from an existing JSONL file. |
-| `sdbench run-matrix` | Headless engine run used by `scripts/run.sh` and CI. |
-| `sdbench run-cell` | Run a single cell by id or explicit tuple. |
+| `cdbench` | Guided menu (no arguments; `sdbench` is a legacy alias of the same app). |
+| `cdbench download` | Resolve and SHA-verify the checkpoint. |
+| `cdbench convert` | Convert CoreML artifacts in the isolated ct8/ct9 envs (cached by checkpoint SHA). |
+| `cdbench measure-disk` | Measure converted-artifact sizes into `config/disk_footprint.yaml`. |
+| `cdbench config` | Interactively select cells, power, and verbosity; save a run plan. |
+| `cdbench run` | Run with live progress and minimal-root power; results are upserted. |
+| `cdbench verify` | Check that all results share one provenance fingerprint matching this environment. |
+| `cdbench cleanup` | Reclaim generated state (models, captures, results) with measured sizes. |
+| `cdbench tables` | Regenerate publication tables from an existing JSONL file. |
+| `cdbench run-matrix` | Headless engine run used by `scripts/run.sh` and CI. |
+| `cdbench run-cell` | Run a single cell by id or explicit tuple. |
 
 Full-suite runs are never the default: cell selection is an explicit checkbox, and "FULL SUITE" is a separate, deliberate menu choice.
 
@@ -67,7 +67,7 @@ If you would rather not grant sudo, decline at the prompt (or pass `--no-power`)
 
 ## Reproducibility and provenance
 
-Every result is stamped with a provenance fingerprint over the checkpoint hash, the tool version, the host chip, and the pinned dependency sets of all three uv environments. If the checkpoint or a dependency changes, dependent results are invalidated before new ones are written, and `sdbench verify` flags any mix of datapoints from different provenances.
+Every result is stamped with a provenance fingerprint over the checkpoint hash, the tool version, the host chip, and the pinned dependency sets of all three uv environments. If the checkpoint or a dependency changes, dependent results are invalidated before new ones are written, and `cdbench verify` flags any mix of datapoints from different provenances.
 
 ## Methodology
 
