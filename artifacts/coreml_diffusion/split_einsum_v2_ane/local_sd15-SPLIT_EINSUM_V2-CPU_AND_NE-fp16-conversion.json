@@ -2,7 +2,6 @@
   "attention": "SPLIT_EINSUM_V2",
   "backend": "coreml_diffusion",
   "batch_size": 2,
-  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
   "compute_unit": "CPU_AND_NE",
   "convert_s": 47.521804917021655,
   "coremltools_major": 9,

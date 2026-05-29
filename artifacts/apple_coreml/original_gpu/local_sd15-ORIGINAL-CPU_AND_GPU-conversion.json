@@ -1,7 +1,6 @@
 {
   "attention": "ORIGINAL",
   "backend": "apple_coreml",
-  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
   "compute_unit": "CPU_AND_GPU",
   "convert_s": 29.931281417026184,
   "coremltools_major": 8,

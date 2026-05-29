@@ -78,7 +78,11 @@ def convert_unet(args: argparse.Namespace, checkpoint: Path, output_dir: Path) -
     timings: dict[str, float | str | None] = {
         "backend": "apple_coreml",
         "coremltools_major": 8,
-        "checkpoint": str(checkpoint),
+        # NOTE: the full checkpoint path is intentionally omitted from this
+        # sidecar — it leaks $HOME. The checkpoint SHA-256 lives in
+        # .source.json next to the artifact and is the canonical identity for
+        # cross-host reproducibility. Filesystem path stays in the runtime
+        # env only.
         "attention": args.attention,
         "compute_unit": args.compute_unit,
         "resolution": args.resolution,
@@ -114,7 +118,7 @@ def convert_unet(args: argparse.Namespace, checkpoint: Path, output_dir: Path) -
         start = time.monotonic()
         try:
             model, out_path = original_convert(*convert_args, **convert_kwargs)
-            timings["mlpackage_path"] = out_path
+            timings["mlpackage_path"] = _relativize(out_path)
             return model, out_path
         finally:
             timings["convert_s"] = time.monotonic() - start
@@ -128,21 +132,36 @@ def convert_unet(args: argparse.Namespace, checkpoint: Path, output_dir: Path) -
         apple._convert_to_coreml = original_convert
 
     if args.compile:
-        mlpackage_path = Path(str(timings["mlpackage_path"]))
-        compiled_path = output_dir / f"{mlpackage_path.stem}.mlmodelc"
+        # `mlpackage_path` is stored relative for the sidecar; resolve back to
+        # an absolute path for the xcrun invocation.
+        mlpackage_rel = Path(str(timings["mlpackage_path"]))
+        mlpackage_abs = (Path.cwd() / mlpackage_rel) if not mlpackage_rel.is_absolute() else mlpackage_rel
+        compiled_path = output_dir / f"{mlpackage_abs.stem}.mlmodelc"
         compile_start = time.monotonic()
         subprocess.run(
-            ["xcrun", "coremlcompiler", "compile", str(mlpackage_path), str(output_dir)],
+            ["xcrun", "coremlcompiler", "compile", str(mlpackage_abs), str(output_dir)],
             check=True,
         )
-        generated_path = output_dir / f"{mlpackage_path.stem}.mlmodelc"
+        generated_path = output_dir / f"{mlpackage_abs.stem}.mlmodelc"
         if generated_path.exists() and generated_path != compiled_path:
             generated_path.rename(compiled_path)
         timings["first_load_compile_s"] = time.monotonic() - compile_start
-        timings["mlmodelc_path"] = str(compiled_path)
+        timings["mlmodelc_path"] = _relativize(compiled_path)
 
     timings["status"] = "ok"
     return timings
+
+
+def _relativize(path) -> str:
+    """Return ``path`` relative to the current workspace root so the emitted
+    JSON sidecars stay portable (no $HOME leak when shared with a maintainer).
+    Falls back to the absolute path when ``path`` is outside the cwd tree —
+    shouldn't happen in practice but kept defensive."""
+    p = Path(path)
+    try:
+        return str(p.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(p)
 
 
 if __name__ == "__main__":

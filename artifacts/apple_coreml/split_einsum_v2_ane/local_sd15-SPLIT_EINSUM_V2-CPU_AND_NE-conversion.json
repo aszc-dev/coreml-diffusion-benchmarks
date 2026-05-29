@@ -1,7 +1,6 @@
 {
   "attention": "SPLIT_EINSUM_V2",
   "backend": "apple_coreml",
-  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
   "compute_unit": "CPU_AND_NE",
   "convert_s": 50.33243583299918,
   "coremltools_major": 8,

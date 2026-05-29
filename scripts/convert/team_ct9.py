@@ -32,6 +32,8 @@ def main() -> None:
     plan = {
         "backend": "coreml_diffusion",
         "coremltools_major": 9,
+        # `--dry-run` plan still shows the absolute paths since this is purely
+        # a local debugging dump; the committed sidecar drops them.
         "checkpoint": str(checkpoint),
         "output_dir": str(output_dir),
         "mlpackage_path": str(mlpackage_path),
@@ -66,7 +68,9 @@ def convert_unet(args: argparse.Namespace, checkpoint: Path, mlpackage_path: Pat
     timings: dict[str, float | str | None] = {
         "backend": "coreml_diffusion",
         "coremltools_major": 9,
-        "checkpoint": str(checkpoint),
+        # NOTE: full checkpoint path intentionally omitted from this sidecar
+        # ($HOME leak). The checkpoint SHA-256 lives in .source.json next to
+        # the artifact and is the canonical identity for reproducibility.
         "attention": args.attention,
         "compute_unit": args.compute_unit,
         "resolution": args.resolution,
@@ -76,7 +80,7 @@ def convert_unet(args: argparse.Namespace, checkpoint: Path, mlpackage_path: Pat
         "graph_capture_s": None,
         "convert_s": None,
         "first_load_compile_s": None,
-        "mlpackage_path": str(mlpackage_path),
+        "mlpackage_path": _relativize(mlpackage_path),
         "mlmodelc_path": None,
         "status": "started",
     }
@@ -125,10 +129,21 @@ def convert_unet(args: argparse.Namespace, checkpoint: Path, mlpackage_path: Pat
         if generated_path.exists() and generated_path != compiled_path:
             generated_path.rename(compiled_path)
         timings["first_load_compile_s"] = time.monotonic() - compile_start
-        timings["mlmodelc_path"] = str(compiled_path)
+        timings["mlmodelc_path"] = _relativize(compiled_path)
 
     timings["status"] = "ok"
     return timings
+
+
+def _relativize(path) -> str:
+    """Return ``path`` relative to the current workspace root so the emitted
+    JSON sidecars stay portable (no $HOME leak when shared with a maintainer).
+    Falls back to the absolute path when ``path`` is outside the cwd tree."""
+    p = Path(path)
+    try:
+        return str(p.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(p)
 
 
 def _quantize_arg(precision: str) -> str:

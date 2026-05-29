@@ -2,7 +2,6 @@
   "attention": "ORIGINAL",
   "backend": "coreml_diffusion",
   "batch_size": 2,
-  "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
   "compute_unit": "CPU_AND_GPU",
   "convert_s": 27.6489882079768,
   "coremltools_major": 9,
