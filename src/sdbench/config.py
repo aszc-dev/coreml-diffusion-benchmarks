@@ -167,6 +167,48 @@ def materialise_packaged_matrix(target: Path) -> Path:
     return target
 
 
+# Packaged-resource -> workspace-relative-path map for the conversion toolchain.
+# The wheel ships these under sdbench/data/; the bootstrap materialises them
+# into the workspace tree so `uv run --project envs/apple-ct8` and
+# `scripts/convert/apple_ct8.py` resolve relative to cwd without a repo
+# checkout. The matrix.yaml entry is handled separately by
+# materialise_packaged_matrix.
+PACKAGED_CONVERT_TREE: tuple[tuple[str, str], ...] = (
+    ("data/scripts/convert/apple_ct8.py", "scripts/convert/apple_ct8.py"),
+    ("data/scripts/convert/team_ct9.py", "scripts/convert/team_ct9.py"),
+    ("data/envs/apple-ct8/pyproject.toml", "envs/apple-ct8/pyproject.toml"),
+    ("data/envs/apple-ct8/uv.lock", "envs/apple-ct8/uv.lock"),
+    ("data/envs/team-ct9/pyproject.toml", "envs/team-ct9/pyproject.toml"),
+    ("data/envs/team-ct9/uv.lock", "envs/team-ct9/uv.lock"),
+)
+
+
+def materialise_convert_tree(workspace_root: Path) -> list[Path]:
+    """Materialise the conversion drivers + isolated env definitions under ``workspace_root``.
+
+    Idempotent: skips files that already exist (so a repo checkout, which has
+    them committed, is a no-op). Returns the list of paths that were written.
+
+    The wheel ships the canonical files under ``sdbench/data/scripts/...`` and
+    ``sdbench/data/envs/...``; dev mode picks them up through symlinks under
+    ``src/sdbench/data/`` so there is exactly one source of truth.
+    """
+    from importlib.resources import files
+
+    pkg = files("sdbench")
+    written: list[Path] = []
+    for resource_path, workspace_rel in PACKAGED_CONVERT_TREE:
+        target = workspace_root / workspace_rel
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Use binary read so uv.lock (text) and any future binary go through one
+        # path; symlinks in dev mode resolve transparently through importlib.
+        target.write_bytes(pkg.joinpath(resource_path).read_bytes())
+        written.append(target)
+    return written
+
+
 def _load_dotenv(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}

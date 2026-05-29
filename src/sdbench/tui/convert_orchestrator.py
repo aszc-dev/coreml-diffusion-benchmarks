@@ -171,6 +171,15 @@ def convert_all(
     each line of toolchain output (streamed when provided), ``on_done(build)``
     after a build converts successfully.
     """
+    # Materialise the conversion drivers + isolated env definitions into the
+    # workspace tree if they're missing. A repo checkout already has them
+    # (no-op); a fresh `uv tool install` workspace gets them written from the
+    # wheel's packaged data. Without this the `uv run --project envs/...`
+    # invocation below would fail with 'can't open file ...apple_ct8.py'.
+    from sdbench.config import materialise_convert_tree
+
+    materialise_convert_tree(ws.root)
+
     to_run: list[ConversionBuild] = []
     skipped: list[ConversionBuild] = []
     for build in plan_conversions(ws, cfg):

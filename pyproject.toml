@@ -49,12 +49,21 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sdbench"]
 
-# Bundle the canonical matrix into the wheel as a packaged resource. Loaders
-# materialize it into `<cwd>/config/matrix.yaml` on first run so an external
-# contributor — who installs the tool via `uv tool install` and has no repo
-# checkout — gets a working config without copying files manually.
+# Bundle the canonical matrix, the two CoreML conversion drivers, and the
+# pinned-isolated-env definitions (ct8 + ct9) into the wheel as packaged
+# resources. The bootstrap in `sdbench.config` materialises them into a
+# fresh workspace tree (`<cwd>/config/`, `<cwd>/scripts/convert/`,
+# `<cwd>/envs/`) on first run so a contributor who installs the tool via
+# `uv tool install` — no repo checkout — gets a working benchmark without
+# copying files manually.
 [tool.hatch.build.targets.wheel.force-include]
 "config/matrix.yaml" = "sdbench/data/matrix.yaml"
+"scripts/convert/apple_ct8.py" = "sdbench/data/scripts/convert/apple_ct8.py"
+"scripts/convert/team_ct9.py" = "sdbench/data/scripts/convert/team_ct9.py"
+"envs/apple-ct8/pyproject.toml" = "sdbench/data/envs/apple-ct8/pyproject.toml"
+"envs/apple-ct8/uv.lock" = "sdbench/data/envs/apple-ct8/uv.lock"
+"envs/team-ct9/pyproject.toml" = "sdbench/data/envs/team-ct9/pyproject.toml"
+"envs/team-ct9/uv.lock" = "sdbench/data/envs/team-ct9/uv.lock"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
