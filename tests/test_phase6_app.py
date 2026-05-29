@@ -4,7 +4,6 @@ from sdbench.config import load_benchmark_config
 from sdbench.provenance import Fingerprint, verify_results
 from sdbench.results import BenchmarkRecord
 from sdbench.tui.app import assess_state
-from sdbench.tui.runtime import RuntimeStatus, check_runtime
 from sdbench.tui.workspace import Workspace
 
 
@@ -26,18 +25,6 @@ def _record(cell_id: str, digest: str | None) -> BenchmarkRecord:
         convert_s=None, first_load_compile_s=None, failure_reason=None,
     )
     return replace(base, provenance_digest=digest)
-
-
-# ----- runtime check -----
-
-def test_runtime_status_ready_property():
-    assert RuntimeStatus(missing=[]).ready is True
-    assert RuntimeStatus(missing=["torch"]).ready is False
-
-
-def test_check_runtime_reports_present_modules():
-    # the dev env installs the bench extra, so nothing should be missing here
-    assert check_runtime().ready is True
 
 
 # ----- provenance verification -----
@@ -92,6 +79,26 @@ def test_assess_state_empty_workspace(tmp_path):
     assert state.checkpoint_present is False
     assert state.artifacts_total == 1 and state.artifacts_present == 0  # only the apple build counts
     assert state.has_runplan is False and state.has_results is False
+    assert state.has_report is False
+
+
+def test_assess_state_detects_report_bundle_zip(tmp_path):
+    ws = Workspace.resolve(tmp_path)
+    cfg = load_benchmark_config(_matrix(tmp_path, str(tmp_path / "missing.safetensors")))
+    reports = ws.results_dir / "reports"
+    reports.mkdir(parents=True)
+    (reports / "run-abc.zip").write_bytes(b"PK")
+    assert assess_state(ws, cfg).has_report is True
+
+
+def test_main_menu_includes_report_entry():
+    from sdbench.tui.app import MENU
+
+    keys = [key for key, _ in MENU]
+    assert "report" in keys
+    # report appears AFTER run (post-benchmark step) and BEFORE cleanup (terminal action).
+    assert keys.index("report") > keys.index("run")
+    assert keys.index("report") < keys.index("cleanup")
 
 
 def test_assess_state_detects_checkpoint_and_artifact(tmp_path):

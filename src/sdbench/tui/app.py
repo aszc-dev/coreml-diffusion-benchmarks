@@ -23,6 +23,7 @@ MENU = [
     ("convert", "Convert artifacts"),
     ("config", "Configure run"),
     ("run", "Run benchmark"),
+    ("report", "Build submission report"),
     ("cleanup", "Clean up"),
     ("quit", "Quit"),
 ]
@@ -35,6 +36,7 @@ class WorkspaceState:
     artifacts_present: int
     artifacts_total: int
     has_results: bool
+    has_report: bool
 
     @property
     def checkpoint_present(self) -> bool:
@@ -55,12 +57,15 @@ def assess_state(ws: Workspace, cfg) -> WorkspaceState:
 
     builds = plan_conversions(ws, cfg)
     present = sum(1 for build in builds if build.expected_artifact.exists())
+    reports_dir = ws.results_dir / "reports"
+    has_report = reports_dir.is_dir() and any(reports_dir.glob("*.zip"))
     return WorkspaceState(
         checkpoint=checkpoint,
         has_runplan=ws.runplan_path.exists(),
         artifacts_present=present,
         artifacts_total=len(builds),
         has_results=(ws.results_data_dir / "results.jsonl").exists(),
+        has_report=has_report,
     )
 
 
@@ -108,7 +113,7 @@ def _menu_frame(ws: Workspace, cfg, menu: Menu):
     body.append("\n  Convert offers to download the model if it is missing.\n", style="sdbench.dim")
     body.append("  Run will send you to configure / convert first if needed.\n", style="sdbench.dim")
     return screen.frame(
-        screen.header("sdbench · SD 1.5 UNet benchmark", screen.state_text(state), screen.usage_text(ws)),
+        screen.header("cdbench · SD 1.5 UNet benchmark", screen.state_text(state), screen.usage_text(ws)),
         Panel(body, title="Menu", border_style="sdbench.title"),
         screen.footer("↑/↓ move · enter select · q quit"),
     )
@@ -123,6 +128,8 @@ def _dispatch(action: str, live, ws: Workspace, config_path) -> None:
         _convert_flow(live, ws, config_path)
     elif action == "run":
         _run_flow(live, ws, config_path)
+    elif action == "report":
+        _report_flow(live, ws, config_path)
     elif action == "cleanup":
         _cleanup_flow(live, ws, config_path)
 
@@ -166,17 +173,10 @@ def _convert_flow(live, ws: Workspace, config_path) -> None:
     from sdbench.provenance import sha256_file
     from sdbench.tui.convert_orchestrator import convert_all, plan_conversions
     from sdbench.tui.dashboard import ConvertDashboard
-    from sdbench.tui.runtime import check_runtime
 
     cfg = load_benchmark_config(config_path)
     checkpoint = _resolve_checkpoint(live, ws, config_path)
     if checkpoint is None:
-        return
-
-    status = check_runtime()
-    if not status.ready:
-        _notice(live, ws, config_path, "Heavy dependencies missing",
-                f"Missing: {', '.join(status.missing)}.\n\nInstall with:\n  uv tool install 'coreml-diffusion-benchmarks[bench]'")
         return
 
     dashboard = ConvertDashboard(live, ws, plan_conversions(ws, cfg))
@@ -222,13 +222,6 @@ def _run_flow(live, ws: Workspace, config_path) -> None:
     from sdbench.tui.dashboard import DashboardReporter
     from sdbench.tui.run_cmd import run_benchmark
     from sdbench.tui.runplan import load_runplan
-    from sdbench.tui.runtime import check_runtime
-
-    status = check_runtime()
-    if not status.ready:
-        _notice(live, ws, config_path, "Heavy dependencies missing",
-                f"Missing: {', '.join(status.missing)}.\n\nInstall the [bench] extra to run benchmarks.")
-        return
 
     if not ws.runplan_path.exists():
         if not _confirm(live, ws, config_path, "No run plan yet. Configure one now?"):
@@ -254,6 +247,145 @@ def _run_flow(live, ws: Workspace, config_path) -> None:
     dashboard = DashboardReporter(live, ws, cell_ids=plan.cell_ids)
     records = run_benchmark(ws, config_path, reporter=dashboard)
     dashboard.show_summary(records)
+    screen.read_key()
+    # Offer the report flow inline so the contributor lands the bundle in one
+    # session — same workflow as the CLI, but guided.
+    if records and _confirm(
+        live, ws, config_path,
+        "Build a submission bundle now (manifest + JSONL + plist + tables, R11.14)?",
+    ):
+        _report_flow(live, ws, config_path)
+
+
+def _report_flow(live, ws: Workspace, config_path) -> None:
+    """Build a contributor submission bundle from the latest run + validate it.
+
+    Same shape as ``cdbench report`` + ``cdbench validate-report`` but driven
+    interactively from the guided flow: confirm anonymization, prompt for the
+    salt (with explanation), build the bundle, gate it through the validator,
+    and surface the resulting zip path plus next-step instructions.
+    """
+    import json
+
+    from sdbench.report import build_report, validate_report
+
+    manifest_path = ws.results_data_dir / "environment.json"
+    if not manifest_path.exists():
+        _notice(
+            live, ws, config_path, "Build submission report",
+            "No environment.json yet — run the benchmark first (Run → benchmark).\n"
+            "The bundle is built from the latest run's manifest + results.",
+        )
+        return
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _notice(live, ws, config_path, "Build submission report", f"Could not read manifest: {exc}")
+        return
+
+    run_id = manifest.get("run_id") or "latest"
+    chip = (manifest.get("hardware") or {}).get("chip_brand") or "(unknown chip)"
+    build = (manifest.get("os") or {}).get("build_version") or "(unknown build)"
+    digest = manifest.get("provenance_digest") or "(unknown)"
+    cells_run = manifest.get("cells_run") or []
+
+    summary = Text()
+    summary.append(f"  Run ID         {run_id}\n")
+    summary.append(f"  Chip           {chip}\n")
+    summary.append(f"  macOS build    {build}\n")
+    summary.append(f"  Provenance     {digest[:12] if digest != '(unknown)' else digest}\n")
+    summary.append(f"  Cells run      {len(cells_run)}\n")
+    panel = Panel(summary, title="Source run", border_style="sdbench.title")
+    live.update(screen.frame(
+        _header(ws, load_benchmark_config(config_path), "Build submission report"),
+        panel,
+        screen.footer("press any key to continue"),
+    ))
+    live.refresh()
+    screen.read_key()
+
+    # Anonymization is opt-in. If the user is going to publish or share with a
+    # maintainer they don't fully trust, this strips filesystem-local PII and
+    # re-hashes the host id. R11.14 forbids stripping anything reproducibility
+    # actually needs (seed, SHAs, package versions stay).
+    anonymize = _confirm(
+        live, ws, config_path,
+        "Anonymize the bundle? Strips checkpoint_path / repo upstream / dirty file list,\n"
+        "and re-hashes host_id_hash with your salt. Seed, SHAs, package versions stay.",
+    )
+    salt: str | None = None
+    if anonymize:
+        live.stop()
+        try:
+            import questionary
+
+            console.print(
+                "[sdbench.title]Anonymization salt[/] — used to re-hash your host id.\n"
+                "Reuse the same salt across runs so your own datapoints still dedup.\n"
+                "Treat it like a passphrase: don't share it with the maintainer."
+            )
+            salt = questionary.text(
+                "Salt:",
+                validate=lambda v: bool(v.strip()) or "Salt cannot be empty.",
+            ).ask()
+        finally:
+            live.start()
+        if not salt:
+            _notice(live, ws, config_path, "Build submission report", "No salt entered — bundle not built.")
+            return
+
+    # Build + validate, both with Live paused around the questionary path; the
+    # bundle build is fast (copy + zip), so a panel + post-hoc summary is enough,
+    # no progress bar needed.
+    live.update(screen.frame(
+        _header(ws, load_benchmark_config(config_path), "Build submission report"),
+        Panel(Text("  Building bundle…\n"), border_style="sdbench.dim"),
+        screen.footer(""),
+    ))
+    live.refresh()
+    try:
+        bundle_path = build_report(
+            ws,
+            run_id=manifest.get("run_id"),
+            zip_bundle=True,
+            anonymize=anonymize,
+            salt=salt,
+        )
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        _notice(live, ws, config_path, "Build submission report", f"Build failed: {exc}")
+        return
+
+    bundle_dir = (ws.results_dir / "reports" / (manifest.get("run_id") or "latest"))
+    verdict = validate_report(bundle_dir)
+
+    result = Text()
+    result.append("  Bundle:    ")
+    result.append(f"{bundle_path}\n", style="sdbench.ok")
+    result.append("  Directory: ")
+    result.append(f"{bundle_dir}\n\n")
+    if verdict.ok:
+        result.append("  validate-report: ", style="sdbench.dim")
+        result.append("OK\n\n", style="sdbench.ok")
+    else:
+        result.append("  validate-report: ", style="sdbench.dim")
+        result.append("FAILED\n", style="sdbench.danger")
+        for issue in verdict.issues:
+            result.append(f"    - {issue}\n", style="sdbench.danger")
+        result.append("\n")
+    result.append("  Schema version: ", style="sdbench.dim")
+    result.append(f"{verdict.schema_version} (supported: {verdict.supported_schema})\n")
+    result.append("\n  Next: attach the .zip to a GitHub Discussion in this repo.\n", style="sdbench.title")
+    if anonymize:
+        result.append("  Keep your salt secret — you'll need it to dedup your future runs.\n", style="sdbench.dim")
+
+    border = "sdbench.ok" if verdict.ok else "sdbench.warn"
+    live.update(screen.frame(
+        _header(ws, load_benchmark_config(config_path), "Build submission report"),
+        Panel(result, title="Bundle ready", border_style=border),
+        screen.footer("press any key"),
+    ))
+    live.refresh()
     screen.read_key()
 
 

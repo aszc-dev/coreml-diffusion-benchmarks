@@ -104,6 +104,7 @@ def state_text(state) -> Text:
         (state.artifacts_total > 0 and state.artifacts_present == state.artifacts_total, f"artifacts {state.artifacts_present}/{state.artifacts_total}"),
         (state.has_runplan, "run plan"),
         (state.has_results, "results"),
+        (getattr(state, "has_report", False), "report"),
     ]
     text = Text()
     for ok, label in chips:
