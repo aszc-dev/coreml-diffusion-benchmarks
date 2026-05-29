@@ -3,13 +3,13 @@
   "backend": "apple_coreml",
   "checkpoint": "/Users/aszczepanski/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.safetensors",
   "compute_unit": "CPU_AND_NE",
-  "convert_s": 45.20031341700087,
+  "convert_s": 44.36360808298923,
   "coremltools_major": 8,
-  "first_load_compile_s": 2.8787400829969556,
-  "graph_capture_s": 33.85170949999883,
+  "first_load_compile_s": 1.3285378339933231,
+  "graph_capture_s": 29.98130787500122,
   "mlmodelc_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/apple_coreml/split_einsum_v2_ane/Stable_Diffusion_version_local_sd15_unet.mlmodelc",
   "mlpackage_path": "/Users/aszczepanski/Documents/coreml-diffusion-benchmarks/artifacts/apple_coreml/split_einsum_v2_ane/Stable_Diffusion_version_local_sd15_unet.mlpackage",
-  "pipeline_load_s": 0.46703312500176253,
+  "pipeline_load_s": 0.4339440839976305,
   "resolution": 512,
   "status": "ok"
 }
