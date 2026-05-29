@@ -4,52 +4,39 @@ version = "0.1.0"
 description = "Stable Diffusion 1.5 UNet cross-backend benchmark harness"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-# Lean core: enough for the interactive front-end (config / cleanup / guided menu)
-# and to keep `uv tool install` / uvx fast. The heavy benchmark stack lives in the
-# `bench` extra and is pulled on first real run.
+# Single install: `uv tool install coreml-diffusion-benchmarks` provisions the
+# full benchmark stack. There is no light-only mode — every meaningful flow
+# (convert, run, prepare-input, download) needs torch + coremltools + diffusers,
+# so splitting the install only confused contributors who saw a menu but
+# couldn't actually run anything.
 dependencies = [
   "click==8.1.8",
+  "coremltools==8.3.0",
+  "diffusers==0.32.2",
+  "mlx>=0.31.2",
   "numpy==2.1.3",
+  "psutil==6.1.1",
+  "pydantic==2.10.6",
   "pyyaml==6.0.2",
   "questionary==2.0.1",
   "readchar>=4.2.2",
   "rich==13.9.4",
-  "typer==0.15.1",
-]
-
-[project.optional-dependencies]
-# Heavy runtime, required to convert and run benchmarks (not for the menu itself).
-# Consumers: `uv tool install 'coreml-diffusion-benchmarks[bench]'`.
-bench = [
-  "coremltools==8.3.0",
-  "diffusers==0.32.2",
-  "mlx>=0.31.2",
-  "psutil==6.1.1",
-  "pydantic==2.10.6",
   "safetensors==0.5.3",
   "torch==2.6.0",
   "transformers==4.49.0",
+  "typer==0.15.1",
 ]
 
 [dependency-groups]
 dev = ["pytest==8.3.4"]
-# Installed by default for development (see tool.uv.default-groups) so `uv sync`
-# keeps provisioning the full stack; mirrors the `bench` extra for consumers.
-bench = [
-  "coremltools==8.3.0",
-  "diffusers==0.32.2",
-  "mlx>=0.31.2",
-  "psutil==6.1.1",
-  "pydantic==2.10.6",
-  "safetensors==0.5.3",
-  "torch==2.6.0",
-  "transformers==4.49.0",
-]
-
-[tool.uv]
-default-groups = ["dev", "bench"]
 
 [project.scripts]
+# `cdbench` is the primary entry point — "CoreML Diffusion bench". After
+# `uv tool install coreml-diffusion-benchmarks` run `cdbench` (or `uv run cdbench`)
+# with no subcommand to get the guided full-screen flow.
+cdbench = "sdbench.cli:app"
+# Legacy alias kept so existing scripts (scripts/run.sh, CI, contributor docs
+# predating the rebrand) keep working without modification.
 sdbench = "sdbench.cli:app"
 
 [build-system]
@@ -58,6 +45,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sdbench"]
+
+# Bundle the canonical matrix into the wheel as a packaged resource. Loaders
+# materialize it into `<cwd>/config/matrix.yaml` on first run so an external
+# contributor — who installs the tool via `uv tool install` and has no repo
+# checkout — gets a working config without copying files manually.
+[tool.hatch.build.targets.wheel.force-include]
+"config/matrix.yaml" = "sdbench/data/matrix.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

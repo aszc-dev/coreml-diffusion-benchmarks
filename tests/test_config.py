@@ -132,6 +132,62 @@ cells:
         load_benchmark_config(config_path)
 
 
+def test_env_var_default_fallback_when_unset(tmp_path, monkeypatch):
+    """``${VAR:-default}`` syntax falls back when the env var is missing — so a
+    fresh `cdbench` install (no SD15_CHECKPOINT set) still loads the config and
+    the download flow takes over."""
+    config_path = tmp_path / "matrix.yaml"
+    config_path.write_text(
+        """
+checkpoint: ${MISSING_SD15_CHECKPOINT:-.cache/sdbench/v1-5.safetensors}
+seed: 0
+iterations: 10
+warmup: 1
+equivalence: { mse_max: 1.0e-3, cosine_min: 0.999 }
+power: { interval_ms: 100, baseline_seconds: 2 }
+cells:
+  - { id: a, backend: mlx, compute_unit: GPU, attention: NATIVE, precision: fp16, resolution: 512 }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("MISSING_SD15_CHECKPOINT", raising=False)
+    cfg = load_benchmark_config(config_path)
+    assert str(cfg.checkpoint) == ".cache/sdbench/v1-5.safetensors"
+
+
+def test_env_var_default_overridden_by_real_env(tmp_path, monkeypatch):
+    """When the env var IS set, the default is ignored and the live value wins."""
+    config_path = tmp_path / "matrix.yaml"
+    config_path.write_text(
+        """
+checkpoint: ${MY_CHECKPOINT:-/tmp/fallback.safetensors}
+seed: 0
+iterations: 10
+warmup: 1
+equivalence: { mse_max: 1.0e-3, cosine_min: 0.999 }
+power: { interval_ms: 100, baseline_seconds: 2 }
+cells:
+  - { id: a, backend: mlx, compute_unit: GPU, attention: NATIVE, precision: fp16, resolution: 512 }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MY_CHECKPOINT", "/srv/real.safetensors")
+    cfg = load_benchmark_config(config_path)
+    assert str(cfg.checkpoint) == "/srv/real.safetensors"
+
+
+def test_bootstrap_materialises_packaged_matrix_when_missing(tmp_path, monkeypatch):
+    """Fresh workspace without config/matrix.yaml gets the packaged default."""
+    target = tmp_path / "config" / "matrix.yaml"
+    assert not target.exists()
+    monkeypatch.delenv("SD15_CHECKPOINT", raising=False)
+    cfg = load_benchmark_config(target)
+    assert target.is_file(), "packaged matrix.yaml should be materialised next to the requested path"
+    assert len(cfg.cells) > 0
+    # The packaged default uses the `:-` fallback so a missing env var doesn't blow up.
+    assert "v1-5-pruned-emaonly" in str(cfg.checkpoint)
+
+
 def test_loads_checkpoint_from_dotenv_next_to_config(tmp_path, monkeypatch):
     checkpoint = tmp_path / "sd15.safetensors"
     checkpoint.write_bytes(b"weights")

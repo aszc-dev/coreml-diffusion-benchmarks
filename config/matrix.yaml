@@ -20,7 +20,11 @@
 
 # Same weights for every backend. An HF id is convenient; a local single-file .safetensors
 # is preferred for byte-identical weights across all four backends (R0.2, R4.1).
-checkpoint: ${SD15_CHECKPOINT}
+#
+# `${VAR:-default}` syntax: when SD15_CHECKPOINT is unset, the value falls back to the
+# default cache path under the workspace. The guided flow detects a missing file there
+# and offers to download + SHA-verify the official weights into that path.
+checkpoint: ${SD15_CHECKPOINT:-.cache/sdbench/v1-5-pruned-emaonly.safetensors}
 # Example HF source for obtaining the local file:
 # stable-diffusion-v1-5/stable-diffusion-v1-5
 

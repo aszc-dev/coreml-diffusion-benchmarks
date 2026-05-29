@@ -7,7 +7,11 @@ from typing import Any
 import yaml
 
 
-ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
+# POSIX-style `${VAR}` and `${VAR:-default}`. The fallback lets the canonical
+# matrix.yaml ship with `${SD15_CHECKPOINT:-<cache path>}` so a fresh
+# `uv tool install`-ed `cdbench` doesn't need any env var pre-set to load the
+# config — the download flow then materialises the cache path.
+ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,12 @@ class BenchmarkConfig:
 
 def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
     config_path = Path(path)
+    if not config_path.exists():
+        # Materialise the packaged canonical matrix.yaml next to the requested
+        # path so a fresh `uv tool install`-ed `cdbench` (no repo checkout) just
+        # works. The repo's own `config/matrix.yaml` is the source the wheel
+        # bundles; here we copy it back out into the user's workspace.
+        materialise_packaged_matrix(config_path)
     env = _load_dotenv(Path.cwd() / ".env") | _load_dotenv(config_path.parent / ".env") | os.environ
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     expanded = _expand_env(raw, env)
@@ -130,11 +140,31 @@ def _expand_env(value: Any, env: dict[str, str]) -> Any:
 
     def replace(match):
         name = match.group(1)
-        if name not in env:
-            raise ValueError(f"Environment variable {name} is not set")
-        return env[name]
+        fallback = match.group(2)
+        if name in env:
+            return env[name]
+        if fallback is not None:
+            return fallback
+        raise ValueError(f"Environment variable {name} is not set")
 
     return ENV_PATTERN.sub(replace, value)
+
+
+def materialise_packaged_matrix(target: Path) -> Path:
+    """Copy the wheel-bundled ``matrix.yaml`` to ``target`` and return the path.
+
+    Used by :func:`load_benchmark_config` so a fresh
+    ``uv tool install coreml-diffusion-benchmarks`` followed by ``cdbench`` in
+    an empty directory finds a working config without the contributor having
+    to clone the repo. The wheel ships the repo's own ``config/matrix.yaml``
+    at ``sdbench/data/matrix.yaml`` (see ``[tool.hatch.build.targets.wheel.force-include]``).
+    """
+    from importlib.resources import files
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = files("sdbench").joinpath("data/matrix.yaml")
+    target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return target
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:

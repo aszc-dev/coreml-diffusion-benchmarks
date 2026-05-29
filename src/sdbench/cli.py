@@ -20,7 +20,6 @@ import typer
 
 from sdbench.backends.registry import build_default_adapters
 from sdbench.config import BenchmarkConfig, load_benchmark_config
-from sdbench.env import collect_environment_manifest, write_environment_manifest
 from sdbench.inputs import generate_shared_input, load_shared_input, save_shared_input
 from sdbench.orchestrator import run_matrix
 from sdbench.power import apply_power_to_records, parse_powermetrics_plist
@@ -81,25 +80,30 @@ def run_matrix_command(
     shared_input: Annotated[Path, typer.Option("--shared-input")] = Path("assets/shared_input/shared_input.npz"),
     results_dir: Annotated[Path, typer.Option("--results-dir")] = Path("results"),
 ) -> None:
-    """Headless engine run (no power, clobber-write). Used by scripts/run.sh and CI."""
-    cfg = load_benchmark_config(config)
-    records = run_matrix(
-        cfg=_with_cells(cfg, cfg.enabled_cells()),
-        shared_input=load_shared_input(shared_input),
-        adapters=build_default_adapters(checkpoint_path=cfg.checkpoint),
-        run_id=str(uuid4()),
-        results_dir=results_dir,
+    """Headless engine run (no harness-side power, upsert-write). Used by scripts/run.sh and CI.
+
+    Delegates to :func:`sdbench.tui.run_cmd.run_benchmark` so every record gets the
+    full reproducibility telemetry (host_id_hash, provenance_digest, latent SHA,
+    env_vars_digest, conversion timings). Power is disabled on the harness side
+    because ``scripts/run.sh`` runs its own external ``powermetrics`` sampler;
+    ``sdbench power`` post-processes the resulting plist."""
+    from sdbench.tui.run_cmd import run_benchmark
+    from sdbench.tui.workspace import Workspace
+
+    ws = Workspace.resolve(results_dir.parent if results_dir.name == "results" else None)
+    run_id = os.environ.get("SDBENCH_RUN_ID") or str(uuid4())
+    shared = load_shared_input(shared_input)
+    records = run_benchmark(
+        ws,
+        config,
+        cell_ids=None,         # falls back to cfg.enabled_cells()
+        power=False,           # external sampler — see scripts/run.sh
+        verbosity="quiet",
+        use_plan=False,
+        run_id=run_id,
+        shared_input=shared,
     )
-    data_path = results_dir / "data" / "results.jsonl"
-    write_jsonl(records, data_path)
-    write_summary_tables(records, results_dir / "tables")
-    manifest = collect_environment_manifest(
-        seed=cfg.seed,
-        run_conditions="default CLI run; record background workload manually for publication runs",
-        checkpoint_path=cfg.checkpoint,
-    )
-    write_environment_manifest(manifest, results_dir / "data" / "environment.json")
-    typer.echo(f"Wrote {len(records)} records to {data_path}")
+    typer.echo(f"Wrote {len(records)} records to {ws.results_data_dir / 'results.jsonl'}")
 
 
 @app.command("run-cell")
@@ -141,7 +145,8 @@ def tables(
     output_dir: Annotated[Path, typer.Option("--output-dir", "-o")] = Path("results/tables"),
 ) -> None:
     records = load_jsonl(input_path)
-    write_summary_tables(records, output_dir)
+    manifest = _load_manifest_for_tables(input_path.parent / "environment.json")
+    write_summary_tables(records, output_dir, manifest=manifest)
     typer.echo(f"Wrote summary tables to {output_dir}")
 
 
@@ -229,6 +234,51 @@ def config_command(
     run_config_screen(Workspace.resolve(workspace), config)
 
 
+@app.command("report")
+def report(
+    run_id: Annotated[str | None, typer.Option("--run-id", help="Bundle this run id (defaults to manifest.run_id).")] = None,
+    output_root: Annotated[Path | None, typer.Option("--output-root", help="Where the bundle lands (default: results/reports).")] = None,
+    zip_bundle: Annotated[bool, typer.Option("--zip/--no-zip", help="Also write a .zip alongside the bundle directory.")] = True,
+    anonymize: Annotated[bool, typer.Option("--anonymize/--no-anonymize", help="Strip filesystem-local PII and re-hash the host id.")] = False,
+    salt: Annotated[str | None, typer.Option("--salt", help="Required when --anonymize is set.")] = None,
+    workspace: Annotated[Path | None, typer.Option("--workspace")] = None,
+) -> None:
+    """Bundle a run for contributor submission (manifest + JSONL + plist + tables + matrix)."""
+    from sdbench.report import build_report
+    from sdbench.tui.workspace import Workspace
+
+    ws = Workspace.resolve(workspace)
+    path = build_report(
+        ws,
+        run_id=run_id,
+        output_root=output_root,
+        zip_bundle=zip_bundle,
+        anonymize=anonymize,
+        salt=salt,
+    )
+    typer.echo(f"Wrote contributor bundle to {path}")
+
+
+@app.command("validate-report")
+def validate_report_command(
+    bundle: Annotated[Path, typer.Argument(help="Path to a bundle directory (not the .zip).")],
+) -> None:
+    """Validate a contributor bundle: schema version + digest + SHA consistency (R11.14, A11)."""
+    from sdbench.report import validate_report
+
+    result = validate_report(bundle)
+    typer.echo(
+        f"schema_version={result.schema_version} supported={result.supported_schema} "
+        f"schema_ok={result.schema_ok} digests_consistent={result.digests_consistent} "
+        f"digests_match_manifest={result.digests_match_manifest} "
+        f"latent_consistent={result.latent_consistent} text_embedding_consistent={result.text_embedding_consistent} "
+        f"ok={result.ok}"
+    )
+    for issue in result.issues:
+        typer.echo(f"  - {issue}")
+    raise typer.Exit(0 if result.ok else 1)
+
+
 @app.command("cleanup")
 def cleanup(
     select_all: Annotated[bool, typer.Option("--all", help="Select every reclaimable target.")] = False,
@@ -261,8 +311,41 @@ def power(
     samples = parse_powermetrics_plist(power_log)
     updated = apply_power_to_records(records, samples, cfg.power.baseline_seconds, cfg.iterations)
     write_jsonl(updated, input_path)
-    write_summary_tables(updated, output_dir)
+    # Re-regenerated tables must keep their captions; load the manifest the
+    # preceding `sdbench run` / `run-matrix` wrote so the chip / build /
+    # provenance digest land in every table header.
+    manifest_path = input_path.parent / "environment.json"
+    manifest = _load_manifest_for_tables(manifest_path)
+    write_summary_tables(updated, output_dir, manifest=manifest)
     typer.echo(f"Applied {len(samples)} power samples to {len(updated)} records in {input_path}")
+
+
+def _load_manifest_for_tables(path: Path):
+    """Best-effort load of the environment manifest as a SimpleNamespace tree.
+
+    Used so post-hoc table writers (``sdbench power``, ``sdbench tables``) can
+    surface the table captions and the environment.md appendix without
+    re-running the benchmark. Returns None if the manifest is missing or
+    unreadable — captions are simply omitted in that case.
+    """
+    if not path.exists():
+        return None
+    try:
+        import json
+        from types import SimpleNamespace
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    def _to_ns(value):
+        if isinstance(value, dict):
+            return SimpleNamespace(**{k: _to_ns(v) for k, v in value.items()})
+        if isinstance(value, list):
+            return [_to_ns(v) for v in value]
+        return value
+
+    return _to_ns(raw)
 
 
 def _single_resolution(cfg: BenchmarkConfig) -> int:
