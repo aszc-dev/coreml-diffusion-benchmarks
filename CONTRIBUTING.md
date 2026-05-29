@@ -44,9 +44,17 @@ and reports refuse to validate when it's true.
 ### Guided (recommended)
 
 ```bash
-uv tool install coreml-diffusion-benchmarks
+uv tool install --python 3.12 coreml-diffusion-benchmarks
 cdbench   # full-screen menu: download → convert → configure → run → report
 ```
+
+> **Why `--python 3.12`?** `coremltools 8.3` ships native binary wheels only
+> for Python 3.10/3.11/3.12. On 3.13+ the native `MLModel` proxy ends up
+> `None` and every adapter load fails with
+> *"Unable to load any compiled models."* The harness refuses to start on an
+> unsupported Python and prints the same fix at the top of every command.
+> If `uv` already installed the tool under 3.13, `uv tool uninstall
+> coreml-diffusion-benchmarks` first, then re-install with `--python 3.12`.
 
 The guided menu walks you through every step (download checkpoint, convert
 CoreML artifacts, configure cells, run with live progress, build submission

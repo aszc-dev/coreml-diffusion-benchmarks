@@ -28,9 +28,39 @@ from sdbench.results import load_jsonl, write_jsonl, write_summary_tables
 app = typer.Typer()
 
 
+_SUPPORTED_PYTHON = (3, 12)
+
+
+def _check_python_version() -> None:
+    """Refuse to start on a Python the heavy stack can't bind to.
+
+    coremltools 8.3.0 ships native wheels only for Python 3.10/3.11/3.12;
+    on 3.13+ ``coremltools.libcoremlpython._MLModelProxy`` ends up None and
+    the first adapter load fails with the cryptic
+    "Unable to load any compiled models. This is most likely because
+    coremltools was installed from an egg rather than a wheel." We catch
+    that here with an actionable remedy instead.
+    """
+    import sys
+
+    actual = sys.version_info[:2]
+    if actual != _SUPPORTED_PYTHON:
+        typer.echo(
+            f"[cdbench] Python {actual[0]}.{actual[1]} is not supported "
+            f"(coremltools 8.3 has no wheel for it). Use Python 3.12:\n"
+            f"  uv tool uninstall coreml-diffusion-benchmarks && \\\n"
+            f"  uv tool install --python 3.12 coreml-diffusion-benchmarks\n"
+            f"or, from a clone:\n"
+            f"  uv sync --python 3.12",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+
 @app.callback(invoke_without_command=True)
 def _entry(ctx: typer.Context) -> None:
     """SD 1.5 UNet cross-backend benchmark. Run with no command for the guided flow."""
+    _check_python_version()
     if ctx.invoked_subcommand is not None:
         return
     from sdbench.tui.app import guided_main
