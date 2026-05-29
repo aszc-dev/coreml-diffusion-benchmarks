@@ -21,3 +21,13 @@ assets/shared_input/*.npz
 
 # Internal design notes, not for the public repo
 tui.md
+
+# Run output is regenerated every benchmark; never source.
+results/data/*.jsonl
+results/data/*.json
+results/data/environments/
+results/tables/*.md
+
+# Local backups of .env (e.g. when reinstalling tooling).
+.env.bak
+*.env.bak
