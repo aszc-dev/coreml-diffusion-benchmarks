@@ -22,10 +22,16 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
+from sdbench import telemetry
 from sdbench.config import load_benchmark_config
 from sdbench.env import collect_environment_manifest, write_environment_manifest
-from sdbench.inputs import generate_shared_input, load_shared_input, save_shared_input
-from sdbench.orchestrator import run_matrix
+from sdbench.inputs import (
+    digest_shared_input,
+    generate_shared_input,
+    load_shared_input,
+    save_shared_input,
+)
+from sdbench.orchestrator import TelemetryContext, run_matrix
 from sdbench.power import apply_power_to_records, parse_powermetrics_plist
 from sdbench.provenance import collect_fingerprint, invalidate_stale_results, record_run, sha256_file
 from sdbench.results import upsert_jsonl, write_summary_tables
@@ -91,7 +97,9 @@ def run_benchmark(
         reporter.log("No cells selected; nothing to run.")
         return []
     cfg_run = replace(cfg, cells=cells)
-    run_id = run_id or str(uuid4())
+    # If RUN_ID is exported by scripts/run.sh (so the plist filename and the
+    # manifest run_id agree), honour it. Otherwise mint a fresh uuid4.
+    run_id = run_id or os.environ.get("SDBENCH_RUN_ID") or str(uuid4())
 
     checkpoint_sha = sha256_file(cfg.checkpoint) if Path(cfg.checkpoint).is_file() else None
     fingerprint = collect_fingerprint(ws, checkpoint_sha)
@@ -99,6 +107,7 @@ def run_benchmark(
     if removed:
         reporter.log(f"Inputs changed since last run — invalidated {len(removed)} stale result file(s).")
 
+    shared_input_path = ws.shared_input_dir / "shared_input.npz"
     if shared_input is None:
         shared_input = _ensure_shared_input(ws, cfg_run, reporter)
 
@@ -117,15 +126,35 @@ def run_benchmark(
     samplers = cfg.power.samplers or DEFAULT_SAMPLERS
     power_log = ws.results_raw_dir / f"{run_id}-powermetrics.plist"
 
+    sudo_cached = False
     if power:
         from sdbench.tui.power_session import authorize_sudo
 
         reporter.log("Power measurement on — authorizing the powermetrics sampler (sudo)…")
-        if not authorize_sudo():
+        sudo_cached = authorize_sudo()
+        if not sudo_cached:
             reporter.log("sudo not granted — continuing without power measurement.")
             power = False
     else:
         reporter.log("Power measurement off.")
+
+    # Snapshot the runtime conditions at the start (battery/AC, low-power,
+    # loadavg, thermal) so the manifest captures drift over the whole run (R11.10).
+    conditions_start = telemetry.snapshot_run_conditions_start(run_conditions)
+    env_vars = telemetry.collect_env_vars()
+    digests = digest_shared_input(shared_input)
+    # power_sampler_interval_ms is always stamped from the config: scripts/run.sh
+    # runs an EXTERNAL sampler at this same interval, so the field must be
+    # populated even when the harness-side PowerSession is disabled. Whether
+    # power was actually measured is independently signalled by gpu_power_w /
+    # ane_power_w being non-null.
+    telemetry_ctx = TelemetryContext(
+        host_id_hash=telemetry.host_id_hash() or None,
+        env_vars_digest=env_vars.digest,
+        power_sampler_interval_ms=cfg.power.interval_ms,
+        latent_input_sha256=digests["latent"],
+        text_embedding_input_sha256=digests["text_embedding"],
+    )
 
     with PowerSession(log_path=power_log, interval_ms=cfg.power.interval_ms, samplers=samplers, enabled=bool(power)):
         with _capture_backend_output(reporter):
@@ -136,8 +165,10 @@ def run_benchmark(
                 run_id=run_id,
                 results_dir=ws.results_dir,
                 reporter=reporter,
+                telemetry_ctx=telemetry_ctx,
             )
 
+    power_sampler_meta = None
     if power:
         samples = parse_powermetrics_plist(power_log) if power_log.exists() else []
         if samples:
@@ -145,6 +176,35 @@ def run_benchmark(
             reporter.log(f"Aligned {len(samples)} power samples to the timed windows.")
         else:
             reporter.log("Power was enabled but the sampler produced no samples; latency stands, power is N/A this run.")
+        power_sampler_meta = telemetry.collect_power_sampler_meta(
+            interval_ms=cfg.power.interval_ms,
+            samplers=samplers,
+            baseline_seconds=cfg.power.baseline_seconds,
+            plist_path=power_log,
+            sudo_cached=sudo_cached,
+        )
+        # Backfill the sample counts now that we've parsed the plist.
+        from dataclasses import replace as _replace
+
+        baseline_window_count = sum(
+            1
+            for s in samples
+            if any(
+                (rec.active_window_start_s or 0) - cfg.power.baseline_seconds
+                <= s.timestamp_s
+                < (rec.active_window_start_s or 0)
+                or (rec.active_window_end_s or 0)
+                <= s.timestamp_s
+                < (rec.active_window_end_s or 0) + cfg.power.baseline_seconds
+                for rec in records
+                if rec.active_window_start_s is not None and rec.active_window_end_s is not None
+            )
+        )
+        power_sampler_meta = _replace(
+            power_sampler_meta,
+            sample_count_total=len(samples),
+            sample_count_baseline_window=baseline_window_count,
+        )
 
     from sdbench.tui.convert_orchestrator import conversion_timings_by_cell
 
@@ -153,16 +213,26 @@ def run_benchmark(
     records = [replace(record, provenance_digest=fingerprint.digest) for record in records]
 
     upsert_jsonl(records, ws.results_data_dir / "results.jsonl")
-    write_summary_tables(records, ws.results_tables_dir)
+    conditions_end = telemetry.snapshot_run_conditions_end(conditions_start)
+    manifest = collect_environment_manifest(
+        seed=cfg.seed,
+        run_conditions=run_conditions,
+        checkpoint_path=cfg.checkpoint,
+        workspace=ws,
+        provenance_digest=fingerprint.digest,
+        run_id=run_id,
+        shared_input=shared_input,
+        shared_input_path=shared_input_path,
+        checkpoint_sha256=checkpoint_sha,
+        power_sampler=power_sampler_meta,
+        conditions=conditions_end,
+        cells_run=[cell.id for cell in cells],
+    )
+    write_summary_tables(records, ws.results_tables_dir, manifest=manifest)
     write_environment_manifest(
-        collect_environment_manifest(
-            seed=cfg.seed,
-            run_conditions=run_conditions,
-            checkpoint_path=cfg.checkpoint,
-            workspace=ws,
-            provenance_digest=fingerprint.digest,
-        ),
+        manifest,
         ws.results_data_dir / "environment.json",
+        history_dir=ws.results_data_dir / "environments",
     )
     record_run(ws, fingerprint, run_id)
     return records

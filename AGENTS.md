@@ -21,8 +21,10 @@ These encode the methodology traps. A build that breaks any of them produces inv
 7. **Numerical equivalence flags, never drops.** Every cell's UNet output is compared (MSE + cosine) against the PyTorch reference on the shared input; failing a threshold marks the cell divergent but keeps its results. (R7.1–R7.4)
 8. **One failing cell never aborts the suite.** Record and continue. (R1.3, R10/A10)
 9. **No vendoring.** Apple `ml-stable-diffusion`, `coreml-diffusion`, `diffusers`, `mlx` are installed dependencies, not copied into the repo. (R0.6, R11.4)
-10. **Pin everything.** All framework versions pinned and written to the per-run manifest; the comparison is version-sensitive. (R10.4, R11.3)
+10. **Pin everything.** All framework versions pinned, **all three `uv.lock` files content-hashed (SHA-256)**, the harness git SHA + dirty flag, and the salted host id hash all written to the per-run manifest; the comparison is version-sensitive AND host-sensitive. (R10.4, R11.3, R11.6, R11.8, R11.9)
 11. **English** for all code, comments, configs, and docs.
+12. **Reports carry their host.** Every emitted artifact — the JSONL row, the generated table, the environment manifest, the contributor bundle — MUST be self-describing about the machine and the toolchain that produced it. A row missing `host_id_hash` + `provenance_digest` is invalid. Tables MUST carry a caption with `sdbench <ver> · <chip> · macOS <build> · provenance <digest[:12]>`. (R11.6-R11.13)
+13. **Schema bumps are breaking.** Renaming or removing any captured manifest / record field MUST bump `TELEMETRY_SCHEMA_VERSION`. Additive changes do not. The `sdbench validate-report` gate refuses bundles newer than the maintainer's supported version; the maintainer's harness MUST be upgraded before such reports can be accepted. (R11.5, R11.14)
 
 ---
 

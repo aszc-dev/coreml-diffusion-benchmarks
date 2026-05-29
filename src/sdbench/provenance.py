@@ -29,6 +29,15 @@ class Fingerprint:
     harness_deps: dict[str, str]
     convert_ct8_deps: dict[str, str]
     convert_ct9_deps: dict[str, str]
+    # Per-host identity hash (salted sysctl kern.uuid) and per-environment lock
+    # content hashes — so a different machine OR a re-resolved lock yields a
+    # different digest and the stale-results sweep fires (R11.6, R11.9).
+    # Defaulted for back-compat with older callers/tests; the live collector
+    # always populates them.
+    host_id_hash: str | None = None
+    harness_uv_lock_sha256: str | None = None
+    convert_ct8_uv_lock_sha256: str | None = None
+    convert_ct9_uv_lock_sha256: str | None = None
 
     @property
     def digest(self) -> str:
@@ -74,6 +83,8 @@ def collect_fingerprint(ws, checkpoint_sha256: str | None, chip: str | None = No
         from sdbench.tui.capabilities import detect_capabilities
 
         chip = detect_capabilities().chip
+    from sdbench.telemetry import host_id_hash as _host_id_hash, sha256_file as _sha256_file
+
     return Fingerprint(
         checkpoint_sha256=checkpoint_sha256,
         tool_version=tool_version(),
@@ -81,6 +92,10 @@ def collect_fingerprint(ws, checkpoint_sha256: str | None, chip: str | None = No
         harness_deps=parse_lock_versions(ws.root / "uv.lock"),
         convert_ct8_deps=parse_lock_versions(ws.root / "envs" / "apple-ct8" / "uv.lock"),
         convert_ct9_deps=parse_lock_versions(ws.root / "envs" / "team-ct9" / "uv.lock"),
+        host_id_hash=_host_id_hash() or None,
+        harness_uv_lock_sha256=_sha256_file(ws.root / "uv.lock"),
+        convert_ct8_uv_lock_sha256=_sha256_file(ws.root / "envs" / "apple-ct8" / "uv.lock"),
+        convert_ct9_uv_lock_sha256=_sha256_file(ws.root / "envs" / "team-ct9" / "uv.lock"),
     )
 
 

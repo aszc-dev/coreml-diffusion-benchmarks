@@ -30,11 +30,15 @@ _MARK = {
 
 
 def _overall_bar() -> Progress:
+    # bar_width=None lets the bar absorb whatever horizontal space the panel
+    # has after the fixed-width text columns — otherwise Rich's 40-cell default
+    # leaves dead space to the right on wide terminals.
     return Progress(
         TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
+        BarColumn(bar_width=None),
         TextColumn("{task.completed}/{task.total}"),
         TimeElapsedColumn(),
+        expand=True,
     )
 
 

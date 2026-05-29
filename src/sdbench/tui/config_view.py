@@ -17,18 +17,33 @@ from sdbench.tui import screen
 from sdbench.tui.capabilities import detect_capabilities
 from sdbench.tui.config_cmd import power_available
 from sdbench.tui.prompts import build_cell_rows
-from sdbench.tui.runplan import RunPlan, save_runplan
+from sdbench.tui.runplan import RunPlan, load_runplan, save_runplan
 
 _VERBOSITY = ["normal", "verbose", "quiet"]
 
 
 class MatrixModel:
-    def __init__(self, rows, power_default: bool = False) -> None:
+    def __init__(
+        self,
+        rows,
+        power_default: bool = False,
+        *,
+        initial_selected: set[str] | None = None,
+        initial_verbosity: str | None = None,
+    ) -> None:
         self.rows = rows
         self.index = 0
-        self.selected = {r.cell.id for r in rows if r.default_selected}
+        # Saved selection (if any) wins over the default — opening the editor
+        # twice in a row must show what the user last saved, not a fresh
+        # default set. Locked rows are filtered so a capability that vanished
+        # since last save doesn't re-appear as a phantom selection.
+        if initial_selected is not None:
+            selectable = {r.cell.id for r in rows if r.selectable}
+            self.selected = {cid for cid in initial_selected if cid in selectable}
+        else:
+            self.selected = {r.cell.id for r in rows if r.default_selected}
         self.power = power_default
-        self.verbosity = "normal"
+        self.verbosity = initial_verbosity if initial_verbosity in _VERBOSITY else "normal"
 
     def move(self, delta: int) -> None:
         if self.rows:
@@ -104,8 +119,22 @@ def _render(ws, model: MatrixModel, power_ok: bool, power_reason: str, cfg):
 def config_view(live, ws, config_path) -> RunPlan | None:
     cfg = load_benchmark_config(config_path)
     rows = build_cell_rows(cfg.cells, detect_capabilities())
-    model = MatrixModel(rows)
+    # Re-hydrate from the last saved run plan so re-opening the editor shows
+    # the current configuration, not the fresh default — otherwise every visit
+    # forces the user to redo their selection just to inspect it.
+    saved: RunPlan | None = None
+    if ws.runplan_path.exists():
+        try:
+            saved = load_runplan(ws.runplan_path)
+        except (OSError, ValueError, KeyError):
+            saved = None  # corrupt/old schema → fall back to defaults
     power_ok, power_reason = power_available()
+    model = MatrixModel(
+        rows,
+        power_default=bool(saved.power_enabled) and power_ok if saved else False,
+        initial_selected=set(saved.cell_ids) if saved else None,
+        initial_verbosity=saved.verbosity if saved else None,
+    )
 
     while True:
         live.update(_render(ws, model, power_ok, power_reason, cfg))
