@@ -49,8 +49,8 @@ def test_collect_host_hardware_parses_sysctl_outputs():
                 0,
                 '{"SPDisplaysDataType":[{"sppci_cores":"40"}]}',
             ),
-            ("ioreg", "-d", "1", "-c", "AppleARMIODevice"): FakeProc(
-                0, '+-o AppleNeuralEngineExecutor  <class AppleNeuralEngine>'
+            ("ioreg", "-l"): FakeProc(
+                0, '          +-o H11ANE  <class H11ANEIn, id 0x100000505>'
             ),
         }
     )
@@ -159,6 +159,48 @@ def test_collect_repo_state_clean_repo():
     repo = telemetry.collect_repo_state(".", runner)
     assert repo.dirty is False
     assert repo.dirty_files == []
+
+
+def test_repo_state_falls_back_to_harness_workspace_sha(monkeypatch):
+    """When the workspace is a git clone of the harness itself, the workspace
+    SHA doubles as the harness commit and ``harness_provenance_source`` says so."""
+    runner = make_runner(
+        {
+            ("git", "-C", ".", "rev-parse", "HEAD"): FakeProc(0, "feedface"),
+            ("git", "-C", ".", "rev-parse", "--abbrev-ref", "HEAD"): FakeProc(0, "main"),
+            ("git", "-C", ".", "status", "--porcelain"): FakeProc(0, ""),
+            ("git", "-C", ".", "remote", "get-url", "origin"): FakeProc(0, "u"),
+            ("git", "-C", ".", "describe", "--always", "--dirty", "--tags"): FakeProc(0, "v0.1"),
+        }
+    )
+    # Force the build-stamp + PEP 610 paths to miss so the workspace fallback runs.
+    from sdbench import _build_info
+
+    monkeypatch.setattr(_build_info, "BUILD_GIT_SHA", None, raising=False)
+    monkeypatch.setattr(_build_info, "BUILD_GIT_DESCRIBE", None, raising=False)
+    monkeypatch.setattr(telemetry, "_read_pep610_commit", lambda: None)
+
+    repo = telemetry.collect_repo_state(".", runner)
+    assert repo.harness_git_sha == "feedface"
+    assert repo.harness_git_describe == "v0.1"
+    assert repo.harness_provenance_source == "workspace"
+
+
+def test_repo_state_prefers_build_stamp_over_workspace(monkeypatch):
+    """``uv tool install`` runs from a non-repo workspace; the wheel's build
+    stamp is the only honest harness identifier in that situation."""
+    runner = make_runner({})  # every git call returns rc=127 → workspace fields stay None
+    from sdbench import _build_info
+
+    monkeypatch.setattr(_build_info, "BUILD_GIT_SHA", "cafebabe123", raising=False)
+    monkeypatch.setattr(_build_info, "BUILD_GIT_DESCRIBE", "v0.1-2-gcafebab", raising=False)
+    monkeypatch.setattr(telemetry, "_read_pep610_commit", lambda: None)
+
+    repo = telemetry.collect_repo_state("/no/such/workspace", runner)
+    assert repo.git_sha is None  # workspace probe failed (not a git clone)
+    assert repo.harness_git_sha == "cafebabe123"
+    assert repo.harness_git_describe == "v0.1-2-gcafebab"
+    assert repo.harness_provenance_source == "build_stamp"
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +401,20 @@ def test_runner_timeout_does_not_propagate():
 def test_collect_power_sampler_meta_includes_plist_sha(tmp_path):
     plist = tmp_path / "p.plist"
     plist.write_bytes(b"<plist></plist>")
-    runner = make_runner({("powermetrics", "--help"): FakeProc(0, "powermetrics version 3.7.0\n")})
+    # ``powermetrics`` has no ``--version``; we fingerprint via ``codesign``
+    # plus the binary's mtime + size, so the runner needs to answer codesign.
+    runner = make_runner(
+        {
+            ("codesign", "-dv", "/usr/bin/powermetrics"): FakeProc(
+                0,
+                "",
+                stderr=(
+                    "Executable=/usr/bin/powermetrics\n"
+                    "Signed Time=11 Oct 2025 at 09:27:31\n"
+                ),
+            )
+        }
+    )
     meta = telemetry.collect_power_sampler_meta(
         interval_ms=100,
         samplers=["cpu_power", "gpu_power", "ane_power"],
@@ -368,7 +423,8 @@ def test_collect_power_sampler_meta_includes_plist_sha(tmp_path):
         sudo_cached=True,
         runner=runner,
     )
-    assert meta.powermetrics_version and "powermetrics" in meta.powermetrics_version
+    assert meta.powermetrics_version and "signed=11 Oct 2025" in meta.powermetrics_version
+    assert "powermetrics" not in meta.powermetrics_version.lower()  # no Usage banner regression
     assert meta.interval_ms == 100
     assert meta.sudo_cached is True
     assert meta.plist_sha256 and len(meta.plist_sha256) == 64

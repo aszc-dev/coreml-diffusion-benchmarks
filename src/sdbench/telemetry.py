@@ -92,7 +92,7 @@ class HostHardware:
     cpu_cores_efficiency: int | None      # sysctl hw.perflevel1.physicalcpu
     cpu_cores_logical: int | None         # sysctl hw.logicalcpu
     gpu_core_count: int | None            # system_profiler SPDisplaysDataType
-    ane_present: bool                     # ioreg -c AppleARMIODevice | grep ane
+    ane_present: bool                     # ioreg | grep '<class H<N>ANEIn'
     ram_bytes: int | None                 # sysctl hw.memsize
     host_id_hash: str                     # sha256(salt + kern.uuid)[:16]; "" if probe failed
 
@@ -176,6 +176,14 @@ class RepoState:
     dirty_files: list[str]
     upstream_url: str | None
     describe: str | None
+    # Identifies the harness that actually ran when the workspace is not the
+    # harness git clone (the common ``uv tool install`` deployment). Populated
+    # from the wheel's stamped ``_build_info`` first, then PEP 610 direct_url,
+    # then the workspace probe above. ``None`` only when the harness was loaded
+    # from a source tree with no git, no build stamp, and no install metadata.
+    harness_git_sha: str | None = None
+    harness_git_describe: str | None = None
+    harness_provenance_source: str | None = None  # "build_stamp"|"pep610"|"workspace"|"none"
 
 
 @dataclass(frozen=True)
@@ -341,11 +349,18 @@ def _probe_gpu_core_count(runner: Runner) -> int | None:
     return None
 
 
+_ANE_CLASS_RE = re.compile(r"<class\s+H\d+ANEIn\b")
+
+
 def _probe_ane_present(runner: Runner) -> bool:
-    rc, out, _ = _run(runner, ["ioreg", "-d", "1", "-c", "AppleARMIODevice"])
+    # The ANE registers as ``H<N>ANEIn`` (e.g. ``H11ANEIn`` on M2 Pro). The class
+    # name lives several levels below ``AppleARMIODevice`` in the IORegistry, so
+    # the previous ``-d 1`` query never matched anything on real hardware. ``-l``
+    # walks the full tree once; the regex covers current and future ANE revisions.
+    rc, out, _ = _run(runner, ["ioreg", "-l"])
     if rc != 0:
         return False
-    return "AppleNeuralEngine" in out or '"ane"' in out.lower()
+    return bool(_ANE_CLASS_RE.search(out))
 
 
 def collect_host_os(runner: Runner | None = None) -> HostOS:
@@ -534,14 +549,70 @@ def collect_repo_state(workspace_root: Path | str, runner: Runner | None = None)
         if rc_status == 0
         else []
     )
+    workspace_sha = sha if rc_sha == 0 and sha else None
+    workspace_describe = describe if rc_describe == 0 and describe else None
+    harness_sha, harness_describe, source = _resolve_harness_commit(workspace_sha, workspace_describe)
     return RepoState(
-        git_sha=sha if rc_sha == 0 and sha else None,
+        git_sha=workspace_sha,
         branch=branch if rc_branch == 0 and branch else None,
         dirty=bool(dirty_files),
         dirty_files=dirty_files,
         upstream_url=remote if rc_remote == 0 and remote else None,
-        describe=describe if rc_describe == 0 and describe else None,
+        describe=workspace_describe,
+        harness_git_sha=harness_sha,
+        harness_git_describe=harness_describe,
+        harness_provenance_source=source,
     )
+
+
+def _resolve_harness_commit(
+    workspace_sha: str | None,
+    workspace_describe: str | None,
+) -> tuple[str | None, str | None, str]:
+    """Pick the strongest available identifier for the harness commit that ran.
+
+    Preference order:
+        1. ``_build_info.BUILD_GIT_SHA`` stamped at wheel-build time.
+        2. PEP 610 ``direct_url.json`` for ``coreml-diffusion-benchmarks`` —
+           covers ``uv pip install git+…`` / ``pip install <url>`` installs.
+        3. The workspace ``git rev-parse`` result (development from a clone).
+    Returning the source lets the manifest reader explain a ``None`` SHA
+    instead of leaving the field unattributed."""
+    try:
+        from sdbench import _build_info
+    except ImportError:
+        _build_info = None  # type: ignore[assignment]
+    stamped_sha = getattr(_build_info, "BUILD_GIT_SHA", None) if _build_info else None
+    stamped_describe = getattr(_build_info, "BUILD_GIT_DESCRIBE", None) if _build_info else None
+    if stamped_sha:
+        return stamped_sha, stamped_describe, "build_stamp"
+
+    pep610_sha = _read_pep610_commit()
+    if pep610_sha:
+        return pep610_sha, None, "pep610"
+
+    if workspace_sha:
+        return workspace_sha, workspace_describe, "workspace"
+
+    return None, None, "none"
+
+
+def _read_pep610_commit() -> str | None:
+    """Parse PEP 610 ``direct_url.json`` for the installed harness distribution."""
+    try:
+        dist = metadata.distribution("coreml-diffusion-benchmarks")
+        raw = dist.read_text("direct_url.json")
+    except (metadata.PackageNotFoundError, FileNotFoundError, OSError):
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    vcs = (data.get("vcs_info") or {}) if isinstance(data, dict) else {}
+    commit = vcs.get("commit_id")
+    return commit if isinstance(commit, str) and commit else None
 
 
 def collect_env_vars(
@@ -699,14 +770,8 @@ def collect_power_sampler_meta(
     runner: Runner | None = None,
 ) -> PowerSamplerMeta:
     runner = runner or _default_runner
-    rc, out, _ = _run(runner, ["powermetrics", "--help"])
-    version_line: str | None = None
-    if rc in (0, 1) and out:
-        # `powermetrics --help` exits non-zero on some macOS releases; the first
-        # non-empty line still carries the version banner.
-        version_line = _first_line(out)
     return PowerSamplerMeta(
-        powermetrics_version=version_line,
+        powermetrics_version=_probe_powermetrics_fingerprint(runner),
         interval_ms=interval_ms,
         samplers=list(samplers),
         baseline_seconds=baseline_seconds,
@@ -716,6 +781,36 @@ def collect_power_sampler_meta(
         plist_path=str(plist_path) if plist_path else None,
         plist_sha256=sha256_file(plist_path) if plist_path else None,
     )
+
+
+_POWERMETRICS_PATH = "/usr/bin/powermetrics"
+_CODESIGN_SIGNED_TIME_RE = re.compile(r"Signed Time=([^\n]+)")
+
+
+def _probe_powermetrics_fingerprint(runner: Runner) -> str | None:
+    """Stable identifier for the powermetrics binary in use.
+
+    ``powermetrics`` has no ``--version`` flag — the old probe captured the
+    ``--help`` usage banner instead, producing ``"Usage: powermetrics ..."`` in
+    the manifest. Apple ships the binary with macOS and re-signs it on every
+    OS update, so we use ``codesign -dv``'s ``Signed Time`` line as a version
+    proxy and pair it with the binary's mtime + size so two runs against the
+    same binary yield the same string."""
+    rc, out, err = _run(runner, ["codesign", "-dv", _POWERMETRICS_PATH])
+    # codesign prints to stderr; combine streams so the regex sees the line.
+    combined = (out or "") + "\n" + (err or "")
+    parts: list[str] = []
+    if rc == 0:
+        match = _CODESIGN_SIGNED_TIME_RE.search(combined)
+        if match:
+            parts.append(f"signed={match.group(1).strip()}")
+    try:
+        stat = Path(_POWERMETRICS_PATH).stat()
+        parts.append(f"size={stat.st_size}")
+        parts.append(f"mtime={int(stat.st_mtime)}")
+    except OSError:
+        pass
+    return "; ".join(parts) if parts else None
 
 
 def collect_determinism_inputs(
