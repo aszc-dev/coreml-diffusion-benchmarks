@@ -114,10 +114,10 @@ def run_benchmark(
 
     thermal = check_thermal_state()
     if thermal.throttled and cfg.thermal.abort_on_throttle:
-        reporter.log(f"Aborting: thermal throttling detected ({thermal.detail}). Let the machine cool (R5.6).")
+        reporter.log(f"[sdbench.danger]Aborting:[/] thermal throttling detected ({thermal.detail}). Let the machine cool (R5.6).")
         return []
     if thermal.throttled:
-        reporter.log(f"Thermal throttling detected ({thermal.detail}); cells will be flagged.")
+        reporter.log(f"[sdbench.warn]Thermal throttling detected[/] ({thermal.detail}); cells will be flagged.")
 
     if adapters is None:
         from sdbench.backends.registry import build_default_adapters
@@ -138,10 +138,17 @@ def run_benchmark(
         env_check = check_power_env()
         render_power_env(env_check)
         if not env_check.ok and not force_power:
-            reporter.log("Power measurement refused by env check; rerun on AC with a quiet host, or pass --force-power.")
+            issues = "; ".join(env_check.issues) or "see env check above"
+            reporter.log(
+                f"[sdbench.danger]Power measurement REFUSED[/] — {issues}. "
+                "Rerun on AC with a quiet host, or pass --force-power."
+            )
             power = False
         elif not env_check.ok and force_power:
-            reporter.log("Power env check failed but --force-power was set — numbers are recorded but should be treated as contaminated.")
+            reporter.log(
+                "[sdbench.warn]Power env check FAILED[/] but --force-power was set — "
+                "numbers are recorded but should be treated as contaminated."
+            )
 
     if power:
         from sdbench.tui.power_session import authorize_sudo
@@ -149,10 +156,10 @@ def run_benchmark(
         reporter.log("Power measurement on — authorizing the powermetrics sampler (sudo)…")
         sudo_cached = authorize_sudo()
         if not sudo_cached:
-            reporter.log("sudo not granted — continuing without power measurement.")
+            reporter.log("[sdbench.warn]sudo not granted[/] — continuing without power measurement.")
             power = False
     else:
-        reporter.log("Power measurement off.")
+        reporter.log("[sdbench.dim]Power measurement off.[/]")
 
     # Snapshot the runtime conditions at the start (battery/AC, low-power,
     # loadavg, thermal) so the manifest captures drift over the whole run (R11.10).

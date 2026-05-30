@@ -61,7 +61,11 @@ def _logs_panel(logs: deque, title: str, tail: int = 12) -> Panel:
     # terminal scrolls (the "lines sliding from under the top edge" symptom).
     text = Text(no_wrap=True, overflow="ellipsis")
     for line in list(logs)[-tail:]:
-        text.append(line + "\n")
+        # Honour ``[sdbench.warn]…[/]`` markup so the few lines that deserve
+        # attention (power-env refusal, thermal abort, sudo declined) actually
+        # stand out instead of blending into the backend chatter.
+        text.append_text(Text.from_markup(line))
+        text.append("\n")
     return Panel(text, title=title, border_style="sdbench.dim", height=tail + 2)
 
 
