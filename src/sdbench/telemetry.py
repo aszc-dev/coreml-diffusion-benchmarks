@@ -26,7 +26,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-TELEMETRY_SCHEMA_VERSION = 2
+TELEMETRY_SCHEMA_VERSION = 3
 
 # Hostname/UUID is hashed with a fixed salt so the published `host_id_hash` is
 # usable for dedup across runs without leaking the underlying hardware UUID.

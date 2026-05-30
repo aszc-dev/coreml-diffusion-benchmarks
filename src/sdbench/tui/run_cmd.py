@@ -18,6 +18,7 @@ import io
 import os
 import re
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -75,6 +76,9 @@ def run_benchmark(
     run_id: str | None = None,
     shared_input=None,
     force_power: bool = False,
+    session_id: str | None = None,
+    repeat_index: int | None = None,
+    repeat_count: int | None = None,
 ):
     _silence_libraries()
     cfg = load_benchmark_config(config_path)
@@ -234,6 +238,23 @@ def run_benchmark(
     timings = conversion_timings_by_cell(ws, cfg_run)
     records = [_with_conversion_timings(record, timings.get(record.cell_id)) for record in records]
     records = [replace(record, provenance_digest=fingerprint.digest) for record in records]
+    if session_id is not None:
+        records = [
+            replace(
+                record,
+                session_id=session_id,
+                repeat_index=repeat_index,
+                repeat_count=repeat_count,
+            )
+            for record in records
+        ]
+        # Per-run mirror under sessions/<session_id>/ so the originals survive
+        # later passes' upserts and the aggregator has stable inputs.
+        session_dir = ws.results_data_dir / "sessions" / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        from sdbench.results import write_jsonl as _write_jsonl
+
+        _write_jsonl(records, session_dir / f"run-{(repeat_index or 0):02d}.jsonl")
 
     upsert_jsonl(records, ws.results_data_dir / "results.jsonl")
     conditions_end = telemetry.snapshot_run_conditions_end(conditions_start)
@@ -250,6 +271,9 @@ def run_benchmark(
         power_sampler=power_sampler_meta,
         conditions=conditions_end,
         cells_run=[cell.id for cell in cells],
+        session_id=session_id,
+        repeat_index=repeat_index,
+        repeat_count=repeat_count,
     )
     write_summary_tables(records, ws.results_tables_dir, manifest=manifest)
     write_environment_manifest(
@@ -259,6 +283,135 @@ def run_benchmark(
     )
     record_run(ws, fingerprint, run_id)
     return records
+
+
+def run_session(
+    ws: Workspace,
+    config_path,
+    *,
+    repeats: int,
+    cooldown_s: float = 30.0,
+    cell_ids: list[str] | None = None,
+    power: bool | None = None,
+    verbosity: str | None = None,
+    use_plan: bool = True,
+    reporter=None,
+    session_id: str | None = None,
+    force_power: bool = False,
+):
+    """Run the matrix ``repeats`` times in one session and aggregate.
+
+    A session is N independent matrix passes that share a ``session_id`` and
+    deliberately do *not* share state otherwise: fresh ``run_id``, fresh power
+    capture, fresh manifest per pass. Between passes the harness sleeps
+    ``cooldown_s`` and gates on thermal state, refusing to start the next pass
+    while the cell is being held in a throttled regime — multi-run only makes
+    sense when each pass starts from a comparable cold state.
+
+    Per-pass JSONLs land under ``results/data/sessions/<session_id>/run-NN.jsonl``;
+    the top-level ``results.jsonl`` follows the last pass via ``upsert_jsonl`` and
+    accumulates one row per ``(cell_id, repeat_index)``. After the loop the
+    session is reduced to ``sessions/<session_id>/aggregated.jsonl`` (per-cell
+    median + p10/p90 of latency, power, energy) plus a ``session.json`` manifest
+    that lists every pass's ``run_id`` and its environment snapshot path.
+    """
+    if repeats < 1:
+        raise ValueError("repeats must be >= 1")
+    if reporter is None:
+        from sdbench.tui.run_view import SimpleReporter
+
+        reporter = SimpleReporter(verbosity or "normal")
+    if repeats == 1:
+        # Single-pass mode is the historical contract — no session_id, no
+        # sessions/ tree, no aggregator. Just delegate.
+        return run_benchmark(
+            ws,
+            config_path,
+            cell_ids=cell_ids,
+            power=power,
+            verbosity=verbosity,
+            use_plan=use_plan,
+            reporter=reporter,
+            force_power=force_power,
+        )
+
+    session_id = session_id or str(uuid4())
+    reporter.log(f"[sdbench.dim]session_id={session_id}[/] · {repeats} repeats · cooldown={cooldown_s:.0f}s")
+    pass_records: list = []
+    for idx in range(repeats):
+        reporter.log(f"[sdbench.dim]── repeat {idx + 1}/{repeats} ──[/]")
+        records = run_benchmark(
+            ws,
+            config_path,
+            cell_ids=cell_ids,
+            power=power,
+            verbosity=verbosity,
+            use_plan=use_plan,
+            reporter=reporter,
+            force_power=force_power,
+            session_id=session_id,
+            repeat_index=idx,
+            repeat_count=repeats,
+        )
+        pass_records.append(records)
+        if idx + 1 < repeats:
+            _cooldown_between_passes(cooldown_s, reporter)
+
+    # Aggregate + write session manifest. Importing here keeps the aggregator
+    # module out of the import path of single-run callers (notably the wheel's
+    # `cdbench` entrypoint which doesn't need it).
+    from sdbench.aggregate import aggregate_session, write_session_manifest
+
+    session_dir = ws.results_data_dir / "sessions" / session_id
+    flat_records = [rec for sub in pass_records for rec in sub]
+    aggregated = aggregate_session(flat_records)
+    from sdbench.results import write_jsonl as _write_jsonl
+
+    _write_jsonl(aggregated, session_dir / "aggregated.jsonl")
+    write_session_manifest(
+        session_dir / "session.json",
+        session_id=session_id,
+        repeats=repeats,
+        cooldown_s=cooldown_s,
+        passes=pass_records,
+    )
+    reporter.log(f"Wrote {len(aggregated)} aggregated cell row(s) → {session_dir / 'aggregated.jsonl'}")
+    # Re-emit tables from the aggregate so the top-level tables/ reflects the
+    # multi-run reality instead of just the last pass.
+    last_manifest_path = ws.results_data_dir / "environment.json"
+    manifest = None
+    if last_manifest_path.exists():
+        from sdbench.cli import _load_manifest_for_tables  # local import to dodge cycles
+
+        manifest = _load_manifest_for_tables(last_manifest_path)
+    write_summary_tables(aggregated, ws.results_tables_dir, manifest=manifest)
+    return flat_records
+
+
+def _cooldown_between_passes(cooldown_s: float, reporter) -> None:
+    """Sleep ``cooldown_s`` and gate on thermal state before the next pass.
+
+    The pass-to-pass spread in energy/step is *the* statistic the session
+    captures, so each pass must start from a comparable cold state. If the host
+    is still being held in a throttled regime after the cooldown, we keep
+    waiting (capped) rather than measure a contaminated pass."""
+    if cooldown_s > 0:
+        reporter.log(f"[sdbench.dim]cooldown {cooldown_s:.0f}s…[/]")
+        time.sleep(cooldown_s)
+    waited = 0.0
+    while True:
+        thermal = check_thermal_state()
+        if not thermal.throttled:
+            return
+        if waited >= 120:
+            reporter.log(
+                f"[sdbench.warn]Thermal throttle still asserted after {waited:.0f}s extra cooldown ({thermal.detail});"
+                " continuing — the next pass will be flagged.[/]"
+            )
+            return
+        reporter.log(f"[sdbench.dim]still throttled ({thermal.detail}); extra cooldown 30s…[/]")
+        time.sleep(30)
+        waited += 30
 
 
 # Raw captured output is loaded with ANSI/control codes from torch/coremltools/tqdm.

@@ -47,6 +47,12 @@ class EnvironmentManifest:
     conditions: RunConditions | None
     cells_run: list[str] = field(default_factory=list)
     probe_errors: dict[str, str] = field(default_factory=dict)
+    # Session metadata for runs produced by ``sdbench run --repeats N``. Single-
+    # run invocations leave these None so the existing manifest layout is
+    # unchanged for the common case.
+    session_id: str | None = None
+    repeat_index: int | None = None
+    repeat_count: int | None = None
 
     # ---- Legacy mirror fields, removed at schema v3 ----------------------
     # Populated from the structured blocks above so external readers that still
@@ -76,6 +82,9 @@ def collect_environment_manifest(
     power_sampler: PowerSamplerMeta | None = None,
     conditions: RunConditions | None = None,
     cells_run: list[str] | None = None,
+    session_id: str | None = None,
+    repeat_index: int | None = None,
+    repeat_count: int | None = None,
 ) -> EnvironmentManifest:
     """Collect every reproducibility fact this run can see.
 
@@ -140,6 +149,9 @@ def collect_environment_manifest(
         conditions=conditions,
         cells_run=list(cells_run or []),
         probe_errors={},
+        session_id=session_id,
+        repeat_index=repeat_index,
+        repeat_count=repeat_count,
         chip_model=chip_model,
         os_version=os_version,
         python_version=python_version,

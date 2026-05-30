@@ -30,7 +30,15 @@ checkpoint: ${SD15_CHECKPOINT:-.cache/sdbench/v1-5-pruned-emaonly.safetensors}
 
 seed: 0                 # single seed, recorded in the manifest (R1.4)
 warmup: 1               # cold runs discarded before timing (R5.2)
-iterations: 10          # timed iterations after warmup; median + IQR reported (R5.3, R5.4)
+iterations: 30          # timed iterations after warmup; median + IQR reported (R5.3, R5.4).
+                        # Bumped from the R5.3 floor of 10 because power averaging at
+                        # ~100 ms sampling needs more samples per cell than latency does:
+                        # 10 iters × ~0.4 s gives ~40 power samples, which lets between-run
+                        # mean-power swing by tens of percent on the same cell. 30 iters
+                        # (~12 s active window) tripples the sample count and still stays
+                        # in the cold thermal regime well clear of throttling — for full
+                        # between-run noise characterisation, use `sdbench run --repeats N`.
+
 resolution_default: 512
 
 equivalence:            # MSE + cosine vs reference; flags, never drops (R7)

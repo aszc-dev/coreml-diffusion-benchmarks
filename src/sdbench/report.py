@@ -35,6 +35,15 @@ class ValidationReport:
     latent_consistent: bool
     text_embedding_consistent: bool
     issues: list[str]
+    # Multi-run additions (schema v3). When the bundle contains a session
+    # (sessions/<id>/aggregated.jsonl + session.json), these surface that the
+    # aggregate is statistically sound: n_runs_ok must be >= the configured
+    # floor, and energy's between-run (p90-p10)/median must stay under the
+    # reproducibility threshold or the cell is flagged as noisy.
+    session_id: str | None = None
+    n_runs_ok_min: int | None = None
+    energy_spread_max: float | None = None
+    session_ok: bool = True
 
     @property
     def ok(self) -> bool:
@@ -44,6 +53,7 @@ class ValidationReport:
             and self.digests_match_manifest
             and self.latent_consistent
             and self.text_embedding_consistent
+            and self.session_ok
             and not self.issues
         )
 
@@ -117,6 +127,17 @@ def build_report(
             if latest_plist:
                 shutil.copy2(latest_plist[-1], bundle_raw / latest_plist[-1].name)
 
+    # Bundle the whole session directory when this run was part of one. The
+    # aggregator's ``sessions/<id>/aggregated.jsonl`` is what the contributor
+    # README points at as the headline result; the per-pass ``run-NN.jsonl``s
+    # and ``session.json`` are kept alongside so a maintainer can audit the
+    # raw passes the aggregate was computed from.
+    session_id = manifest.get("session_id")
+    if session_id:
+        session_src = workspace.results_data_dir / "sessions" / session_id
+        if session_src.exists():
+            shutil.copytree(session_src, bundle_dir / "sessions" / session_id, dirs_exist_ok=True)
+
     matrix = Path(matrix_config) if matrix_config else workspace.matrix_path
     if matrix.exists():
         # Snapshot the matrix the run *actually executed*, not the raw source
@@ -143,8 +164,30 @@ def build_report(
     return bundle_dir
 
 
+#: Minimum ``n_runs_ok`` across cells for a multi-run aggregate to be accepted.
+#: Three is the floor at which the p10/p90 interpolation in
+#: :mod:`sdbench.aggregate` is well-defined and the median is no longer
+#: dominated by a single pass.
+SESSION_MIN_RUNS_OK = 3
+
+#: Maximum tolerated ``(p90 - p10) / median`` on ``energy_per_unet_step_j``
+#: for a multi-run aggregate to be accepted. Above this the cell's energy
+#: figure is dominated by between-run noise (background processes, residual
+#: thermal state) and any conclusion drawn from a single median is misleading.
+#: 0.30 matches what we saw on the contaminated ``ours-ane-fp16`` and
+#: ``mlx-gpu-fp16`` pairs that motivated this mode.
+SESSION_MAX_ENERGY_SPREAD = 0.30
+
+
 def validate_report(bundle: Path | str) -> ValidationReport:
-    """Validate a contributor bundle: schema version + digest + SHA consistency."""
+    """Validate a contributor bundle: schema version + digest + SHA consistency.
+
+    For multi-run bundles (``manifest.session_id`` present, plus a
+    ``sessions/<id>/aggregated.jsonl`` next to the per-pass JSONLs) additionally
+    enforces that every cell aggregated at least :data:`SESSION_MIN_RUNS_OK`
+    passes and that the energy/step between-run spread stays within
+    :data:`SESSION_MAX_ENERGY_SPREAD` (otherwise the aggregate's headline
+    median is a coin flip)."""
     root = Path(bundle)
     issues: list[str] = []
     manifest_path = root / "manifest.json"
@@ -206,6 +249,60 @@ def validate_report(bundle: Path | str) -> ValidationReport:
     else:
         issues.append("results.jsonl missing")
 
+    session_id = manifest.get("session_id")
+    n_runs_ok_min: int | None = None
+    energy_spread_max: float | None = None
+    session_ok = True
+    if session_id:
+        aggregated_path = root / "sessions" / session_id / "aggregated.jsonl"
+        if not aggregated_path.exists():
+            issues.append(f"sessions/{session_id}/aggregated.jsonl missing for multi-run bundle")
+            session_ok = False
+        else:
+            agg_rows = [
+                json.loads(line)
+                for line in aggregated_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if not agg_rows:
+                issues.append("aggregated.jsonl is empty")
+                session_ok = False
+            # Cells reduced from too few ok passes have no business carrying a
+            # p10/p90 — surface them as a hard fail so the bundle can't be
+            # silently accepted as multi-run.
+            n_ok_values = [int(row["n_runs_ok"]) for row in agg_rows if row.get("n_runs_ok") is not None]
+            if n_ok_values:
+                n_runs_ok_min = min(n_ok_values)
+                if n_runs_ok_min < SESSION_MIN_RUNS_OK:
+                    issues.append(
+                        f"min n_runs_ok={n_runs_ok_min} below floor {SESSION_MIN_RUNS_OK} "
+                        f"— rerun with --repeats >= {SESSION_MIN_RUNS_OK}"
+                    )
+                    session_ok = False
+            # Energy spread: only computed when we actually have a p10/p90
+            # (i.e. the cell aggregated >= 3 ok passes). Cells that failed too
+            # often to interpolate are already flagged above.
+            spreads: list[float] = []
+            noisy: list[tuple[str, float]] = []
+            for row in agg_rows:
+                med = row.get("energy_per_unet_step_j")
+                lo = row.get("energy_per_unet_step_j_p10")
+                hi = row.get("energy_per_unet_step_j_p90")
+                if med and lo is not None and hi is not None and med > 0:
+                    rel = (float(hi) - float(lo)) / float(med)
+                    spreads.append(rel)
+                    if rel > SESSION_MAX_ENERGY_SPREAD:
+                        noisy.append((str(row.get("cell_id", "?")), rel))
+            if spreads:
+                energy_spread_max = max(spreads)
+            for cell_id, rel in noisy:
+                issues.append(
+                    f"cell '{cell_id}' energy spread (p90-p10)/median={rel:.2f} "
+                    f"exceeds {SESSION_MAX_ENERGY_SPREAD:.2f} — add repeats or quieten the host"
+                )
+            if noisy:
+                session_ok = False
+
     return ValidationReport(
         schema_version=schema_version if isinstance(schema_version, int) else None,
         supported_schema=TELEMETRY_SCHEMA_VERSION,
@@ -215,6 +312,10 @@ def validate_report(bundle: Path | str) -> ValidationReport:
         latent_consistent=latent_consistent,
         text_embedding_consistent=text_embedding_consistent,
         issues=issues,
+        session_id=session_id,
+        n_runs_ok_min=n_runs_ok_min,
+        energy_spread_max=energy_spread_max,
+        session_ok=session_ok,
     )
 
 

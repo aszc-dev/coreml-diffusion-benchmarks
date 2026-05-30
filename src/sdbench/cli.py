@@ -90,13 +90,29 @@ def run(
     verbosity: Annotated[str | None, typer.Option("--verbosity", help="quiet | normal | verbose.")] = None,
     use_plan: Annotated[bool, typer.Option("--use-plan/--no-use-plan", help="Use the run plan saved by `config`.")] = True,
     force_power: Annotated[bool, typer.Option("--force-power", help="Record power even if the env check fails (battery/low-power/noisy host). The numbers will be flagged.")] = False,
+    repeats: Annotated[int, typer.Option("--repeats", help="Repeat the matrix N times as one session; per-cell median + p10/p90 of latency, power and energy are aggregated to sessions/<id>/aggregated.jsonl. Use N>=3 to characterise between-run noise on energy (R5.4).")] = 1,
+    cooldown_s: Annotated[float, typer.Option("--cooldown-s", help="Seconds to sleep between repeats (then gate on thermal state). Ignored when --repeats=1.")] = 30.0,
 ) -> None:
     """Run the benchmark with live progress, minimal-root power, and upserted results."""
-    from sdbench.tui.run_cmd import run_benchmark
+    from sdbench.tui.run_cmd import run_benchmark, run_session
     from sdbench.tui.workspace import Workspace
 
+    ws = Workspace.resolve(workspace)
+    if repeats > 1:
+        run_session(
+            ws,
+            config,
+            repeats=repeats,
+            cooldown_s=cooldown_s,
+            cell_ids=cell or None,
+            power=power,
+            verbosity=verbosity,
+            use_plan=use_plan,
+            force_power=force_power,
+        )
+        return
     run_benchmark(
-        Workspace.resolve(workspace),
+        ws,
         config,
         cell_ids=cell or None,
         power=power,
@@ -299,12 +315,15 @@ def validate_report_command(
     from sdbench.report import validate_report
 
     result = validate_report(bundle)
+    spread = f"{result.energy_spread_max:.3f}" if result.energy_spread_max is not None else "N/A"
+    n_ok_min = result.n_runs_ok_min if result.n_runs_ok_min is not None else "N/A"
     typer.echo(
         f"schema_version={result.schema_version} supported={result.supported_schema} "
         f"schema_ok={result.schema_ok} digests_consistent={result.digests_consistent} "
         f"digests_match_manifest={result.digests_match_manifest} "
         f"latent_consistent={result.latent_consistent} text_embedding_consistent={result.text_embedding_consistent} "
-        f"ok={result.ok}"
+        f"session_id={result.session_id or 'N/A'} n_runs_ok_min={n_ok_min} "
+        f"energy_spread_max={spread} session_ok={result.session_ok} ok={result.ok}"
     )
     for issue in result.issues:
         typer.echo(f"  - {issue}")

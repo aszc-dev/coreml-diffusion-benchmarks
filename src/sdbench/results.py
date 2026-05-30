@@ -51,6 +51,29 @@ class BenchmarkRecord:
     power_sampler_interval_ms: int | None = None
     latent_input_sha256: str | None = None
     text_embedding_input_sha256: str | None = None
+    # Multi-run session telemetry (schema v3, R5.4 between-run variance).
+    # ``session_id`` spans the N independent runs of ``sdbench run --repeats N``;
+    # ``run_id`` still identifies a single matrix pass within that session.
+    # ``repeat_index`` is 0..repeat_count-1 within the session; both default to
+    # None so single-run records and pre-v3 JSONL keep loading unchanged.
+    session_id: str | None = None
+    repeat_index: int | None = None
+    repeat_count: int | None = None
+    # Aggregated-row fields. Populated only by ``sdbench.aggregate`` for the
+    # per-cell rows in ``sessions/<id>/aggregated.jsonl``; the median columns
+    # above keep their meaning ("median across the N passes") while p10/p90 add
+    # the between-run spread. ``n_runs_ok``/``failed`` describe how many passes
+    # this row was reduced from.
+    latency_ms_p10: float | None = None
+    latency_ms_p90: float | None = None
+    gpu_power_w_p10: float | None = None
+    gpu_power_w_p90: float | None = None
+    ane_power_w_p10: float | None = None
+    ane_power_w_p90: float | None = None
+    energy_per_unet_step_j_p10: float | None = None
+    energy_per_unet_step_j_p90: float | None = None
+    n_runs_ok: int | None = None
+    n_runs_failed: int | None = None
 
 
 def write_jsonl(records: list[BenchmarkRecord], path: str | Path) -> None:
@@ -73,11 +96,15 @@ def load_jsonl(path: str | Path) -> list[BenchmarkRecord]:
 def upsert_jsonl(records: list[BenchmarkRecord], path: str | Path, key=None) -> list[BenchmarkRecord]:
     """Merge records into an existing JSONL, replacing rows with a matching key.
 
-    Keyed by ``cell_id`` by default: running a single cell updates only its row
-    and leaves the rest of the matrix intact, instead of clobbering the whole
-    file. Existing rows keep their order; genuinely new cells are appended.
+    Keyed by ``(cell_id, repeat_index)`` by default: running a single cell
+    updates only its row and leaves the rest of the matrix intact, instead of
+    clobbering the whole file. Existing rows keep their order; genuinely new
+    cells are appended. ``repeat_index`` is treated as 0 when absent so single-
+    run records and pre-v3 JSONL load unchanged — multi-run sessions
+    (``--repeats N``) get one row per (cell_id, repeat_index) pair without
+    overwriting earlier passes.
     """
-    keyfn = key or (lambda record: record.cell_id)
+    keyfn = key or (lambda record: (record.cell_id, record.repeat_index or 0))
     output = Path(path)
     merged: dict = {}
     if output.exists():
@@ -102,17 +129,41 @@ def write_summary_tables(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     caption = _table_caption(manifest)
+    # When the records come from a session-aggregator pass, the median columns
+    # mean "median across N repeats" and the spread columns expose the
+    # between-run p10–p90 the reader needs to gauge reproducibility (R5.4).
+    # Render the spread inline as ``median [p10–p90]`` so the table stays one
+    # row per cell instead of doubling for the repeat dimension; if no
+    # aggregation is present, fall back to the single-run "median (IQR)" shape.
+    multi_run = any(record.repeat_count and record.repeat_index is None for record in records)
+    if multi_run:
+        n_runs_caption = _multi_run_caption(records)
+        caption = f"{caption} · {n_runs_caption}" if caption else n_runs_caption
     _write_table(
         out / "latency.md",
-        ["Cell", "Backend", "Median latency (ms)", "IQR (ms)", "Status"],
+        ["Cell", "Backend", "Median latency (ms)", "Within-pass IQR (ms)", "Between-pass p10–p90 (ms)", "n_ok", "Status"]
+        if multi_run
+        else ["Cell", "Backend", "Median latency (ms)", "IQR (ms)", "Status"],
         [
-            [
-                record.cell_id,
-                record.backend,
-                _fmt(record.latency_ms_median),
-                _fmt(record.latency_ms_iqr),
-                record.status,
-            ]
+            (
+                [
+                    record.cell_id,
+                    record.backend,
+                    _fmt(record.latency_ms_median),
+                    _fmt(record.latency_ms_iqr),
+                    _fmt_range(record.latency_ms_p10, record.latency_ms_p90),
+                    _fmt(record.n_runs_ok),
+                    record.status,
+                ]
+                if multi_run
+                else [
+                    record.cell_id,
+                    record.backend,
+                    _fmt(record.latency_ms_median),
+                    _fmt(record.latency_ms_iqr),
+                    record.status,
+                ]
+            )
             for record in records
         ],
         caption=caption,
@@ -123,15 +174,19 @@ def write_summary_tables(
             "Cell",
             "GPU power (W)",
             "ANE power (W)",
-            "Energy / UNet step (J)",
+            "Energy / UNet step (J)" + (" · p10–p90" if multi_run else ""),
             "Estimated energy / 50-step image (J)",
         ],
         [
             [
                 record.cell_id,
-                _fmt(record.gpu_power_w),
-                _fmt(record.ane_power_w),
-                _fmt(record.energy_per_unet_step_j),
+                _fmt_median_with_spread(record.gpu_power_w, record.gpu_power_w_p10, record.gpu_power_w_p90),
+                _fmt_median_with_spread(record.ane_power_w, record.ane_power_w_p10, record.ane_power_w_p90),
+                _fmt_median_with_spread(
+                    record.energy_per_unet_step_j,
+                    record.energy_per_unet_step_j_p10,
+                    record.energy_per_unet_step_j_p90,
+                ),
                 _fmt(record.estimated_energy_per_50_step_image_j),
             ]
             for record in records
@@ -429,6 +484,39 @@ def _fmt(value) -> str:
     if isinstance(value, float):
         return f"{value:.6g}"
     return str(value)
+
+
+def _fmt_range(lo, hi) -> str:
+    """Render a between-pass percentile range as ``p10–p90`` or ``N/A``.
+
+    Empty when the session had too few passes for the aggregator to compute the
+    interval (<3 valid samples); the lone median already lives in its own
+    column so we don't double-print it."""
+    if lo is None or hi is None:
+        return "N/A"
+    return f"{_fmt(lo)}–{_fmt(hi)}"
+
+
+def _fmt_median_with_spread(median, lo, hi) -> str:
+    """Render the energy / power columns as ``median [p10–p90]``.
+
+    Inlining the spread next to the median keeps the table one row per cell
+    while making the between-run uncertainty impossible to overlook — the whole
+    point of multi-run mode. Falls back to plain median when the percentile
+    bounds are unavailable (single-run rows, or sessions with <3 passes)."""
+    if median is None:
+        return "N/A"
+    if lo is None or hi is None:
+        return _fmt(median)
+    return f"{_fmt(median)} [{_fmt(lo)}–{_fmt(hi)}]"
+
+
+def _multi_run_caption(records) -> str:
+    counts = sorted({record.repeat_count for record in records if record.repeat_count})
+    if not counts:
+        return "multi-run aggregate"
+    counts_label = ",".join(str(c) for c in counts)
+    return f"multi-run aggregate · repeats={counts_label}"
 
 
 def _fmt_eq(value, spec: str) -> str:
