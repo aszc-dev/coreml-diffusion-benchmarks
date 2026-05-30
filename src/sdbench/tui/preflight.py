@@ -5,6 +5,7 @@ only. Disk sizes are *measured* (populated by `measure-disk`), never estimated �
 when a cell has no measured footprint yet it is reported as unknown, honestly.
 """
 
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,8 +13,14 @@ from pathlib import Path
 import yaml
 from rich.panel import Panel
 
+from sdbench import telemetry
 from sdbench.thermal import check_thermal_state
 from sdbench.tui.console import console, human_bytes
+
+# A 10-core M2 Pro idles around loadavg ≈ 0.5. The threshold needs to flag
+# sustained noisy backgrounds (Spotlight, Time Machine, that AddressBookManager
+# regression Apple shipped in macOS 26) without flagging a healthy idle host.
+POWER_LOADAVG_MAX = 2.0
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,81 @@ POWER_SECURITY_TEXT = (
 
 def render_power_security() -> None:
     console.print(Panel(POWER_SECURITY_TEXT, title="Power needs sudo — here's why and how to stay safe", border_style="sdbench.warn"))
+
+
+@dataclass(frozen=True)
+class PowerEnvCheck:
+    """Snapshot of the conditions that govern whether power numbers are usable.
+
+    Each field carries the raw fact AND a boolean ``*_ok`` so the renderer can
+    explain *why* a measurement was refused; the caller just consults ``ok``."""
+
+    ac_powered: bool
+    ac_ok: bool
+    low_power_mode: bool
+    low_power_ok: bool
+    loadavg_1m: float | None
+    loadavg_ok: bool
+    issues: list[str]
+
+    @property
+    def ok(self) -> bool:
+        return self.ac_ok and self.low_power_ok and self.loadavg_ok
+
+
+def check_power_env(loadavg_max: float = POWER_LOADAVG_MAX) -> PowerEnvCheck:
+    """Decide whether the host is in shape to deliver trustworthy power numbers.
+
+    Battery-powered runs are refused: macOS reroutes thermal/clock budgets
+    differently on battery and the per-engine W values stop being comparable to
+    AC numbers. Low-power mode caps clocks. A noisy loadavg means the baseline
+    captured at the start of the run is contaminated by an unrelated workload."""
+    power_state = telemetry.collect_host_power_state()
+    try:
+        loadavg = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        loadavg = None
+
+    issues: list[str] = []
+    if not power_state.ac_powered:
+        issues.append("plug into AC power before measuring (battery throttles differently)")
+    if power_state.low_power_mode:
+        issues.append("low-power mode is on (System Settings → Battery)")
+    if loadavg is not None and loadavg > loadavg_max:
+        issues.append(
+            f"loadavg_1m={loadavg:.2f} exceeds {loadavg_max:.1f} — close background apps "
+            "(check Activity Monitor; macOS 26 ships an AddressBookManager regression)"
+        )
+
+    return PowerEnvCheck(
+        ac_powered=power_state.ac_powered,
+        ac_ok=power_state.ac_powered,
+        low_power_mode=power_state.low_power_mode,
+        low_power_ok=not power_state.low_power_mode,
+        loadavg_1m=loadavg,
+        loadavg_ok=loadavg is None or loadavg <= loadavg_max,
+        issues=issues,
+    )
+
+
+def render_power_env(check: PowerEnvCheck) -> None:
+    if check.ok:
+        ac = "AC" if check.ac_powered else "battery"
+        load = f"{check.loadavg_1m:.2f}" if check.loadavg_1m is not None else "?"
+        console.print(f"[sdbench.ok]Power env: ok[/] ({ac}, loadavg_1m={load}).")
+        return
+    lines = [f"- {item}" for item in check.issues]
+    console.print(
+        Panel(
+            "Power numbers will NOT be comparable in this environment:\n"
+            + "\n".join(lines)
+            + "\n\nFix the items above, then rerun. Override with --force-power if you "
+            "really mean to record contaminated numbers (they will still be flagged "
+            "in the manifest).",
+            title="Power env check — refused",
+            border_style="sdbench.danger",
+        )
+    )
 
 
 def render_close_apps_reminder() -> None:

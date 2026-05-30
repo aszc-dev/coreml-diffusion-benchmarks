@@ -74,6 +74,7 @@ def run_benchmark(
     reporter=None,
     run_id: str | None = None,
     shared_input=None,
+    force_power: bool = False,
 ):
     _silence_libraries()
     cfg = load_benchmark_config(config_path)
@@ -127,6 +128,21 @@ def run_benchmark(
     power_log = ws.results_raw_dir / f"{run_id}-powermetrics.plist"
 
     sudo_cached = False
+    if power:
+        # Refuse to record power on battery / low-power / noisy host. The
+        # contributor's last run on a 5.4 loadavg with AddressBookManager at
+        # 53% CPU produced numbers no reviewer could trust; gate before sudo
+        # so the operator does not type their password just to be told no.
+        from sdbench.tui.preflight import check_power_env, render_power_env
+
+        env_check = check_power_env()
+        render_power_env(env_check)
+        if not env_check.ok and not force_power:
+            reporter.log("Power measurement refused by env check; rerun on AC with a quiet host, or pass --force-power.")
+            power = False
+        elif not env_check.ok and force_power:
+            reporter.log("Power env check failed but --force-power was set — numbers are recorded but should be treated as contaminated.")
+
     if power:
         from sdbench.tui.power_session import authorize_sudo
 

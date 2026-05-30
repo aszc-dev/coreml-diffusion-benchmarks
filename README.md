@@ -65,6 +65,16 @@ Per-engine power requires Apple's `powermetrics`, which needs root. Root is kept
 
 If you would rather not grant sudo, decline at the prompt (or pass `--no-power`): power metering is disabled and every other metric — latency, equivalence, model size, conversion time — still runs. The guided flow also reminds you to close other heavy apps before a run, since background load skews latency and pollutes the per-engine power baseline.
 
+### Power numbers require AC and a quiet host
+
+Before the sampler starts, `cdbench run --power` checks three preconditions:
+
+- the laptop is plugged into AC (battery routes thermal and clock budgets differently, so the W and J figures are not comparable to AC numbers);
+- low-power mode is off (it caps CPU/GPU clocks);
+- `loadavg_1m ≤ 2.0` (a noisy background contaminates the baseline window captured before each cell).
+
+A failed check refuses to record power and leaves latency/equivalence/size as the trustworthy outputs. Pass `--force-power` to override — the resulting numbers will still be flagged in the manifest and should not be quoted next to clean runs.
+
 ## Reproducibility and provenance
 
 Every result is stamped with a provenance fingerprint over the checkpoint hash, the tool version, the host chip, and the pinned dependency sets of all three uv environments. If the checkpoint or a dependency changes, dependent results are invalidated before new ones are written, and `cdbench verify` flags any mix of datapoints from different provenances.

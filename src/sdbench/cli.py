@@ -89,6 +89,7 @@ def run(
     power: Annotated[bool | None, typer.Option("--power/--no-power", help="Measure power (only the sampler runs as root). Defaults to the run plan.")] = None,
     verbosity: Annotated[str | None, typer.Option("--verbosity", help="quiet | normal | verbose.")] = None,
     use_plan: Annotated[bool, typer.Option("--use-plan/--no-use-plan", help="Use the run plan saved by `config`.")] = True,
+    force_power: Annotated[bool, typer.Option("--force-power", help="Record power even if the env check fails (battery/low-power/noisy host). The numbers will be flagged.")] = False,
 ) -> None:
     """Run the benchmark with live progress, minimal-root power, and upserted results."""
     from sdbench.tui.run_cmd import run_benchmark
@@ -101,6 +102,7 @@ def run(
         power=power,
         verbosity=verbosity,
         use_plan=use_plan,
+        force_power=force_power,
     )
 
 
