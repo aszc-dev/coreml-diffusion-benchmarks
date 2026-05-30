@@ -19,6 +19,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 from sdbench.results import BenchmarkRecord, load_jsonl
 from sdbench.telemetry import TELEMETRY_SCHEMA_VERSION
 
@@ -117,7 +119,16 @@ def build_report(
 
     matrix = Path(matrix_config) if matrix_config else workspace.matrix_path
     if matrix.exists():
-        shutil.copy2(matrix, bundle_dir / "matrix.yaml")
+        # Snapshot the matrix the run *actually executed*, not the raw source
+        # file. The static yaml can carry ``enabled: false`` rows and ad-hoc
+        # CLI selections diverge from it too; bundling it verbatim has misled
+        # reviewers into thinking disabled cells were measured. The cells_run
+        # list in the manifest is the source of truth for execution scope, so
+        # we filter the yaml's ``cells:`` to that set and stamp a header that
+        # makes the provenance explicit. The original is preserved alongside.
+        executed_ids = list(manifest.get("cells_run") or [])
+        _write_executed_matrix(matrix, bundle_dir / "matrix.yaml", executed_ids)
+        shutil.copy2(matrix, bundle_dir / "matrix.source.yaml")
 
     (bundle_dir / "README.md").write_text(_bundle_readme(manifest, anonymize), encoding="utf-8")
     (bundle_dir / "SCHEMA.md").write_text(_schema_doc(manifest.get("schema_version")), encoding="utf-8")
@@ -236,6 +247,41 @@ def _anonymize_record(record: BenchmarkRecord) -> BenchmarkRecord:
     return replace(record, host_id_hash=None)
 
 
+def _write_executed_matrix(source: Path, destination: Path, executed_ids: list[str]) -> None:
+    """Render a yaml that reflects the realised run.
+
+    The cell ordering follows ``executed_ids`` so the bundled matrix matches
+    the order of rows in ``results.jsonl``. ``enabled: true`` is forced on the
+    surviving cells and a header comment points at the original source file.
+    Top-level keys (checkpoint, seed, equivalence, power, …) are kept as-is."""
+    try:
+        loaded = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        # If the source is unparseable, fall back to copying it verbatim so we
+        # never silently drop information the reviewer might still need.
+        shutil.copy2(source, destination)
+        return
+    cells_by_id = {cell["id"]: cell for cell in (loaded.get("cells") or []) if isinstance(cell, dict) and "id" in cell}
+    realised: list[dict] = []
+    for cid in executed_ids:
+        cell = cells_by_id.get(cid)
+        if cell is None:
+            # The CLI can run cells that aren't in the static yaml (selected
+            # by tuple); we still want them represented in the bundled matrix.
+            realised.append({"id": cid, "enabled": True, "_synthesised": True})
+            continue
+        cell = dict(cell)
+        cell["enabled"] = True
+        realised.append(cell)
+    loaded["cells"] = realised
+    header = (
+        "# AUTO-GENERATED for this run. The original matrix.yaml is preserved as\n"
+        "# matrix.source.yaml. Cells here are filtered to manifest.cells_run and\n"
+        "# match the rows in results.jsonl one-for-one (and in that order).\n"
+    )
+    destination.write_text(header + yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
+
+
 def _bundle_readme(manifest: dict, anonymized: bool) -> str:
     schema = manifest.get("schema_version")
     digest = manifest.get("provenance_digest") or "(unknown)"
@@ -256,7 +302,8 @@ def _bundle_readme(manifest: dict, anonymized: bool) -> str:
         "- `results.jsonl` — one record per matrix cell.\n"
         "- `tables/` — Markdown tables (latency, power_energy, size_quantization, conversion_time, environment).\n"
         "- `raw/` — retained powermetrics plists for auditability (R10.3).\n"
-        "- `matrix.yaml` — the matrix config the run consumed.\n"
+        "- `matrix.yaml` — the realised matrix: filtered + ordered to match `results.jsonl`.\n"
+        "- `matrix.source.yaml` — the unmodified source file the run was launched from.\n"
         "- `SCHEMA.md` — schema notes and compatibility window.\n"
         "\n"
         "## Verification\n"

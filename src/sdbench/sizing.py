@@ -37,9 +37,17 @@ def safetensors_weight_size(
     key_prefixes: tuple[str, ...],
     compute_precision: str,
 ) -> ModelSize:
+    """Per-backend UNet weight footprint, normalised to compute precision.
+
+    SD 1.5 checkpoints ship fp32 on Hugging Face; diffusers and MLX cast to
+    fp16 at load time. Reporting the raw fp32 byte count under
+    ``weight_only_size_bytes`` against CoreML's fp16 weight.bin produced an
+    apples-to-oranges 4.26 GB vs 1.72 GB row in the size table. We now scale
+    every parameter to the dtype actually used at compute time so the column
+    reflects what lives in memory during inference (R8.1, R8.3). On-disk size
+    is unchanged (still the real bytes the checkpoint occupies)."""
     from safetensors import safe_open
 
-    weight_bytes = 0
     parameter_count = 0
     with safe_open(Path(path), framework="pt", device="cpu") as handle:
         for key in handle.keys():
@@ -47,10 +55,9 @@ def safetensors_weight_size(
                 continue
             tensor_slice = handle.get_slice(key)
             shape = tensor_slice.get_shape()
-            dtype = tensor_slice.get_dtype()
-            numel = prod(shape)
-            parameter_count += numel
-            weight_bytes += numel * _dtype_bytes(dtype)
+            parameter_count += prod(shape)
+    bytes_per_param = _compute_precision_bytes(compute_precision)
+    weight_bytes = parameter_count * bytes_per_param
     return ModelSize(
         on_disk_size_bytes=artifact_size_bytes(path),
         weight_only_size_bytes=weight_bytes,
@@ -68,6 +75,24 @@ def safetensors_parameter_count(path: str | Path, key_prefixes: tuple[str, ...])
             if key.startswith(key_prefixes):
                 parameter_count += prod(handle.get_slice(key).get_shape())
     return parameter_count
+
+
+def _compute_precision_bytes(precision: str) -> int:
+    """Bytes per parameter when the model runs at ``precision``.
+
+    Used by safetensors-fed backends to normalise their UNet weight footprint
+    against CoreML, whose mlpackage already stores fp16 (or quantised) bytes."""
+    table = {
+        "fp32": 4,
+        "fp16": 2,
+        "bf16": 2,
+        "w8": 1, "w8a8": 1, "q8": 1, "int8": 1,
+        # nibble-packed; round up so dense parameter counts come out integer-byte.
+        "w4": 1, "q4": 1, "int4": 1,
+    }
+    if precision not in table:
+        raise ValueError(f"Unknown compute precision: {precision}")
+    return table[precision]
 
 
 def _dtype_bytes(dtype: str) -> int:

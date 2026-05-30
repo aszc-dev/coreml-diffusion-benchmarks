@@ -19,16 +19,26 @@ class MlxAdapter:
 
     name = "mlx"
 
-    def __init__(self, checkpoint_path, mx_module=None, unet_module=None, state_dict_loader=None, compile=True):
+    def __init__(
+        self,
+        checkpoint_path,
+        mx_module=None,
+        unet_module=None,
+        state_dict_loader=None,
+        compile=True,
+        reference_unet_loader=None,
+    ):
         self.checkpoint_path = Path(checkpoint_path).expanduser()
         self._mx = mx_module
         self._unet = unet_module
         self._state_dict_loader = state_dict_loader
+        self._reference_unet_loader = reference_unet_loader
         self._compile = compile
         self._weights = None
         self._config = None
         self._dtype = None
         self._forward = None
+        self._reference_unet = None
 
     def prepare(self, cfg) -> RealizedConfig:
         if cfg.compute_unit != "GPU":
@@ -80,10 +90,26 @@ class MlxAdapter:
         mx.eval(output)  # force materialization before returning (R3.4.2)
         return np.asarray(output, dtype=np.float32)
 
+    def reference_step(self, latent: np.ndarray, timestep: int, text_embedding: np.ndarray) -> np.ndarray:
+        """fp32 CPU reference for equivalence comparison.
+
+        Mirrors the other backends: build the diffusers UNet once on CPU in
+        fp32 and run a single forward. Without this method the orchestrator
+        falls back to ``shared_input.latent`` as the reference, which would
+        compare the model output to its own noise input — meaningless."""
+        unet = self._load_reference_unet()
+        torch = self._load_torch_for_reference()
+        latent_tensor = torch.from_numpy(np.asarray(latent, dtype=np.float32))
+        text_tensor = torch.from_numpy(np.asarray(text_embedding, dtype=np.float32))
+        with torch.no_grad():
+            output = unet(latent_tensor, int(timestep), encoder_hidden_states=text_tensor).sample
+        return output.float().cpu().numpy()
+
     def teardown(self) -> None:
         self._weights = None
         self._config = None
         self._forward = None
+        self._reference_unet = None
         mx = self._mx
         if mx is not None and hasattr(mx, "clear_cache"):
             mx.clear_cache()
@@ -121,6 +147,29 @@ class MlxAdapter:
             local_files_only=True,
         )
         return unet.state_dict()
+
+    def _load_reference_unet(self):
+        if self._reference_unet is None:
+            if self._reference_unet_loader is not None:
+                self._reference_unet = self._reference_unet_loader()
+            else:
+                import torch
+                from diffusers import UNet2DConditionModel
+
+                unet = UNet2DConditionModel.from_single_file(
+                    str(self.checkpoint_path),
+                    torch_dtype=torch.float32,
+                    local_files_only=True,
+                )
+                self._reference_unet = unet.to("cpu").eval()
+        return self._reference_unet
+
+    def _load_torch_for_reference(self):
+        # ``torch`` is a hard dep of the harness env; importing here keeps the
+        # MLX adapter import-clean for callers that only want ``step()``.
+        import torch
+
+        return torch
 
 
 def build_adapter(checkpoint_path):

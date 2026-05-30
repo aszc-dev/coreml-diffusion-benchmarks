@@ -57,6 +57,25 @@ def test_safetensors_weight_size_filters_unet_prefix(tmp_path):
     assert size.compute_precision == "fp16"
 
 
+def test_safetensors_weight_size_normalises_fp32_storage_to_fp16_runtime(tmp_path):
+    """SD 1.5 ships fp32 on Hugging Face; diffusers/MLX cast to fp16 at load.
+    The reported weight footprint must reflect the in-memory runtime size so
+    the size table compares fp16-vs-fp16, not fp32-storage-vs-fp16-mlpackage."""
+    path = tmp_path / "fp32_checkpoint.safetensors"
+    save_file(
+        {"model.diffusion_model.block.weight": torch.zeros((4, 4), dtype=torch.float32)},
+        path,
+    )
+
+    size = safetensors_weight_size(path, ("model.diffusion_model.",), compute_precision="fp16")
+
+    # 16 parameters × 2 bytes (fp16) = 32, not 64 (fp32 storage).
+    assert size.weight_only_size_bytes == 32
+    assert size.effective_bits_per_parameter == 16.0
+    # on_disk still reflects the real fp32 file: 16 × 4 bytes plus safetensors header.
+    assert size.on_disk_size_bytes >= 64
+
+
 def test_safetensors_parameter_count_filters_prefix(tmp_path):
     path = tmp_path / "model.safetensors"
     save_file(
@@ -123,6 +142,60 @@ def test_summary_tables_use_unet_step_energy_name(tmp_path):
     power_table = (tmp_path / "power_energy.md").read_text(encoding="utf-8")
     assert "Energy / UNet step (J)" in power_table
     assert "Estimated energy / 50-step image (J)" in power_table
+
+
+def test_equivalence_table_preserves_subepsilon_precision(tmp_path):
+    """Reader must see real drift between fp16 backend and fp32 CPU reference;
+    rounding to four decimals would hide a cosine of 0.9999996 as 1.0000."""
+    flagged = BenchmarkRecord(
+        run_id="run",
+        cell_id="ane-cell",
+        backend="apple_coreml",
+        requested_compute_unit="CPU_AND_NE",
+        realized_compute_unit="CPU_AND_NE",
+        attention="SPLIT_EINSUM_V2",
+        precision="fp16",
+        resolution=512,
+        status="ok",
+        latency_ms_median=400.0,
+        latency_ms_iqr=0.3,
+        gpu_power_w=None, ane_power_w=None,
+        energy_per_unet_step_j=None, estimated_energy_per_50_step_image_j=None,
+        mse=5.65e-3, cosine=0.99689, numerically_divergent=True,
+        on_disk_size_bytes=None, weight_only_size_bytes=None,
+        effective_bits_per_parameter=None, compute_precision="fp16",
+        graph_capture_s=None, convert_s=None, first_load_compile_s=None,
+        failure_reason=None,
+    )
+    clean = BenchmarkRecord(
+        run_id="run",
+        cell_id="gpu-cell",
+        backend="apple_coreml",
+        requested_compute_unit="CPU_AND_GPU",
+        realized_compute_unit="CPU_AND_GPU",
+        attention="ORIGINAL",
+        precision="fp16",
+        resolution=512,
+        status="ok",
+        latency_ms_median=440.0,
+        latency_ms_iqr=1.0,
+        gpu_power_w=None, ane_power_w=None,
+        energy_per_unet_step_j=None, estimated_energy_per_50_step_image_j=None,
+        mse=6.13e-7, cosine=0.9999996, numerically_divergent=False,
+        on_disk_size_bytes=None, weight_only_size_bytes=None,
+        effective_bits_per_parameter=None, compute_precision="fp16",
+        graph_capture_s=None, convert_s=None, first_load_compile_s=None,
+        failure_reason=None,
+    )
+
+    write_summary_tables([flagged, clean], tmp_path)
+
+    table = (tmp_path / "equivalence.md").read_text(encoding="utf-8")
+    assert "| MSE | Cosine | Flagged |" in table
+    assert "5.650e-03" in table and "0.9968900" in table and "| yes |" in table
+    # Critical: a cosine of 0.9999996 must NOT round to 1.0 in the table.
+    assert "0.9999996" in table
+    assert "| no |" in table
 
 
 def test_results_jsonl_round_trips_records(tmp_path):

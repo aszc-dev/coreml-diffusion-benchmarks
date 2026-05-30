@@ -91,7 +91,7 @@ def equivalence_markup(record) -> str:
     """Inline equivalence with markup: cosine value, flagged when over threshold."""
     if record.cosine is None:
         return ""
-    cos = f"cos {record.cosine:.4f}"
+    cos = f"cos {record.cosine:.7f}"
     if record.numerically_divergent:
         mse = f", mse {record.mse:.2e}" if record.mse is not None else ""
         return f" · [sdbench.warn]{cos}{mse} (flagged)[/]"
@@ -102,7 +102,7 @@ def equivalence_plain(record) -> str:
     """Unstyled equivalence for aligned rows."""
     if record.cosine is None:
         return "—"
-    cos = f"cos {record.cosine:.4f}"
+    cos = f"cos {record.cosine:.7f}"
     if record.numerically_divergent:
         mse = f" mse {record.mse:.2e}" if record.mse is not None else ""
         return f"{cos}{mse} (flagged)"

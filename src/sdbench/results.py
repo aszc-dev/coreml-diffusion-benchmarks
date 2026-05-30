@@ -167,6 +167,23 @@ def write_summary_tables(
         ],
         caption=caption,
     )
+    # Equivalence is its own table so the reader can audit numerical fidelity
+    # without trawling JSONL. Float displays use scientific notation; rounding
+    # to four decimals would render 0.9999996 as "1.0000" and hide real drift.
+    _write_table(
+        out / "equivalence.md",
+        ["Cell", "MSE", "Cosine", "Flagged"],
+        [
+            [
+                record.cell_id,
+                _fmt_eq(record.mse, ".3e"),
+                _fmt_eq(record.cosine, ".7f"),
+                _fmt_flag(record.numerically_divergent),
+            ]
+            for record in records
+        ],
+        caption=caption,
+    )
     if manifest is not None:
         write_environment_appendix(manifest, out / "environment.md")
 
@@ -412,6 +429,23 @@ def _fmt(value) -> str:
     if isinstance(value, float):
         return f"{value:.6g}"
     return str(value)
+
+
+def _fmt_eq(value, spec: str) -> str:
+    """Format an equivalence metric with an explicit spec.
+
+    ``_fmt`` collapses to ``%g`` which would mask sub-µ MSE values and round
+    a cosine of 0.9999996 to ``"1"``. The equivalence table needs to surface
+    that drift, so callers pass the precision they want."""
+    if value is None:
+        return "N/A"
+    return format(float(value), spec)
+
+
+def _fmt_flag(flag) -> str:
+    if flag is None:
+        return "N/A"
+    return "yes" if flag else "no"
 
 
 def _json_safe(value):

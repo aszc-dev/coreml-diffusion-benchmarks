@@ -156,3 +156,44 @@ def test_teardown_releases_weights_and_clears_cache(tmp_path):
 
     assert adapter._weights is None
     assert mx.cleared is True
+
+
+class FakeRefUnet:
+    """Stand-in for a diffusers UNet on CPU. Returns a deterministic fp32 tensor
+    derived from the latent so reference_step output is observable in tests."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, latent, timestep, encoder_hidden_states):
+        import torch
+
+        self.calls.append((latent.dtype, int(timestep), tuple(encoder_hidden_states.shape)))
+        sample = (latent + 0.5).to(torch.float32)
+        return SimpleNamespace(sample=sample)
+
+
+def test_reference_step_runs_injected_fp32_unet(tmp_path):
+    pytest.importorskip("torch")
+    import torch
+
+    ref_unet = FakeRefUnet()
+    checkpoint = tmp_path / "sd15.safetensors"
+    checkpoint.write_bytes(b"weights")
+    adapter = MlxAdapter(
+        checkpoint,
+        mx_module=FakeMx(),
+        unet_module=FakeUnetModule(),
+        state_dict_loader=lambda: {"a": 1},
+        reference_unet_loader=lambda: ref_unet,
+    )
+
+    latent = np.ones((2, 4, 8, 8), dtype=np.float32)
+    text = np.zeros((2, 77, 768), dtype=np.float32)
+    output = adapter.reference_step(latent, 250, text)
+
+    assert isinstance(output, np.ndarray) and output.dtype == np.float32
+    assert output.shape == (2, 4, 8, 8)
+    np.testing.assert_allclose(output, latent + 0.5)
+    assert ref_unet.calls[0][0] == torch.float32  # reference forward stays in fp32
+    assert ref_unet.calls[0][1] == 250
