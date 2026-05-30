@@ -16,7 +16,7 @@ import hashlib
 import json
 import shutil
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -44,6 +44,11 @@ class ValidationReport:
     n_runs_ok_min: int | None = None
     energy_spread_max: float | None = None
     session_ok: bool = True
+    # Cells in the bundle that ran despite ``enabled: false`` in the source
+    # matrix. Surfaced informationally — the bundle stays valid because the
+    # bundled matrix records the override — but the maintainer should see what
+    # diverged from the committed source.
+    matrix_overrides: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -148,7 +153,8 @@ def build_report(
         # we filter the yaml's ``cells:`` to that set and stamp a header that
         # makes the provenance explicit. The original is preserved alongside.
         executed_ids = list(manifest.get("cells_run") or [])
-        _write_executed_matrix(matrix, bundle_dir / "matrix.yaml", executed_ids)
+        override_ids = list(manifest.get("matrix_overrides") or [])
+        _write_executed_matrix(matrix, bundle_dir / "matrix.yaml", executed_ids, override_ids)
         shutil.copy2(matrix, bundle_dir / "matrix.source.yaml")
 
     (bundle_dir / "README.md").write_text(_bundle_readme(manifest, anonymize), encoding="utf-8")
@@ -249,6 +255,13 @@ def validate_report(bundle: Path | str) -> ValidationReport:
     else:
         issues.append("results.jsonl missing")
 
+    # Cells run despite ``enabled: false`` in the source matrix. Not a
+    # validation failure — the bundled ``matrix.yaml`` carries them with
+    # ``_matrix_override: true`` so cloning the bundle reproduces the same
+    # scope — but surfaced on the report so a maintainer eyeballing it knows
+    # the realised matrix diverges from the committed source.
+    matrix_overrides = list(manifest.get("matrix_overrides") or [])
+
     session_id = manifest.get("session_id")
     n_runs_ok_min: int | None = None
     energy_spread_max: float | None = None
@@ -316,6 +329,7 @@ def validate_report(bundle: Path | str) -> ValidationReport:
         n_runs_ok_min=n_runs_ok_min,
         energy_spread_max=energy_spread_max,
         session_ok=session_ok,
+        matrix_overrides=matrix_overrides,
     )
 
 
@@ -348,13 +362,26 @@ def _anonymize_record(record: BenchmarkRecord) -> BenchmarkRecord:
     return replace(record, host_id_hash=None)
 
 
-def _write_executed_matrix(source: Path, destination: Path, executed_ids: list[str]) -> None:
+def _write_executed_matrix(
+    source: Path,
+    destination: Path,
+    executed_ids: list[str],
+    override_ids: list[str] | None = None,
+) -> None:
     """Render a yaml that reflects the realised run.
 
     The cell ordering follows ``executed_ids`` so the bundled matrix matches
     the order of rows in ``results.jsonl``. ``enabled: true`` is forced on the
     surviving cells and a header comment points at the original source file.
-    Top-level keys (checkpoint, seed, equivalence, power, …) are kept as-is."""
+    Top-level keys (checkpoint, seed, equivalence, power, …) are kept as-is.
+
+    Cells listed in ``override_ids`` ran despite the source matrix marking
+    them ``enabled: false``; the bundled cell is annotated with a
+    ``_matrix_override`` flag and a comment block names them at the top so a
+    reader cloning the bundle understands why the realised matrix has more
+    cells than the source. Without this marker the bundle silently rewrites
+    history — the exact reproducibility hole the matrix snapshot exists to
+    close."""
     try:
         loaded = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError:
@@ -362,6 +389,7 @@ def _write_executed_matrix(source: Path, destination: Path, executed_ids: list[s
         # never silently drop information the reviewer might still need.
         shutil.copy2(source, destination)
         return
+    overrides = set(override_ids or [])
     cells_by_id = {cell["id"]: cell for cell in (loaded.get("cells") or []) if isinstance(cell, dict) and "id" in cell}
     realised: list[dict] = []
     for cid in executed_ids:
@@ -373,13 +401,24 @@ def _write_executed_matrix(source: Path, destination: Path, executed_ids: list[s
             continue
         cell = dict(cell)
         cell["enabled"] = True
+        if cid in overrides:
+            cell["_matrix_override"] = True
         realised.append(cell)
     loaded["cells"] = realised
-    header = (
-        "# AUTO-GENERATED for this run. The original matrix.yaml is preserved as\n"
-        "# matrix.source.yaml. Cells here are filtered to manifest.cells_run and\n"
-        "# match the rows in results.jsonl one-for-one (and in that order).\n"
-    )
+    header_lines = [
+        "# AUTO-GENERATED for this run. The original matrix.yaml is preserved as",
+        "# matrix.source.yaml. Cells here are filtered to manifest.cells_run and",
+        "# match the rows in results.jsonl one-for-one (and in that order).",
+    ]
+    if overrides:
+        header_lines.append("#")
+        header_lines.append(
+            "# matrix_overrides: cells run despite enabled: false in matrix.source.yaml."
+        )
+        for cid in executed_ids:
+            if cid in overrides:
+                header_lines.append(f"#   - {cid}")
+    header = "\n".join(header_lines) + "\n"
     destination.write_text(header + yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
 
 

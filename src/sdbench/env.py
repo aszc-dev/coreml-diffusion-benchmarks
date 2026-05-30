@@ -47,6 +47,13 @@ class EnvironmentManifest:
     conditions: RunConditions | None
     cells_run: list[str] = field(default_factory=list)
     probe_errors: dict[str, str] = field(default_factory=dict)
+    # Cell ids that ran in this invocation despite ``enabled: false`` in the
+    # source ``matrix.yaml`` (e.g. an experimenter ticked an opt-in cell in the
+    # interactive picker). Surfaced in the bundle so cloning the repo and
+    # rerunning with the unmodified matrix doesn't silently produce a smaller
+    # cell set than the report. Empty list = no overrides, the default for a
+    # plain ``sdbench run``.
+    matrix_overrides: list[str] = field(default_factory=list)
     # Session metadata for runs produced by ``sdbench run --repeats N``. Single-
     # run invocations leave these None so the existing manifest layout is
     # unchanged for the common case.
@@ -82,6 +89,7 @@ def collect_environment_manifest(
     power_sampler: PowerSamplerMeta | None = None,
     conditions: RunConditions | None = None,
     cells_run: list[str] | None = None,
+    matrix_overrides: list[str] | None = None,
     session_id: str | None = None,
     repeat_index: int | None = None,
     repeat_count: int | None = None,
@@ -149,6 +157,7 @@ def collect_environment_manifest(
         conditions=conditions,
         cells_run=list(cells_run or []),
         probe_errors={},
+        matrix_overrides=list(matrix_overrides or []),
         session_id=session_id,
         repeat_index=repeat_index,
         repeat_count=repeat_count,

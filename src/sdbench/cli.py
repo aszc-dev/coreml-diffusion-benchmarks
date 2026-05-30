@@ -317,13 +317,15 @@ def validate_report_command(
     result = validate_report(bundle)
     spread = f"{result.energy_spread_max:.3f}" if result.energy_spread_max is not None else "N/A"
     n_ok_min = result.n_runs_ok_min if result.n_runs_ok_min is not None else "N/A"
+    overrides = ",".join(result.matrix_overrides) or "none"
     typer.echo(
         f"schema_version={result.schema_version} supported={result.supported_schema} "
         f"schema_ok={result.schema_ok} digests_consistent={result.digests_consistent} "
         f"digests_match_manifest={result.digests_match_manifest} "
         f"latent_consistent={result.latent_consistent} text_embedding_consistent={result.text_embedding_consistent} "
         f"session_id={result.session_id or 'N/A'} n_runs_ok_min={n_ok_min} "
-        f"energy_spread_max={spread} session_ok={result.session_ok} ok={result.ok}"
+        f"energy_spread_max={spread} matrix_overrides={overrides} "
+        f"session_ok={result.session_ok} ok={result.ok}"
     )
     for issue in result.issues:
         typer.echo(f"  - {issue}")

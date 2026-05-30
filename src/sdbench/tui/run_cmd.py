@@ -258,6 +258,14 @@ def run_benchmark(
 
     upsert_jsonl(records, ws.results_data_dir / "results.jsonl")
     conditions_end = telemetry.snapshot_run_conditions_end(conditions_start)
+    # Cells that ran despite being ``enabled: false`` in the source matrix.yaml.
+    # We compare ``cells`` (what actually ran) to the full ``cfg.cells`` list
+    # (the unfiltered parse of the source matrix) so the override surfaces even
+    # when the runplan brought them in — the bundled matrix would otherwise
+    # look like the source disabled them while the results table claims they
+    # ran, which is the exact reproducibility hole the bundle is meant to close.
+    enabled_in_source = {c.id for c in cfg.cells if c.enabled}
+    matrix_overrides = [c.id for c in cells if c.id not in enabled_in_source]
     manifest = collect_environment_manifest(
         seed=cfg.seed,
         run_conditions=run_conditions,
@@ -271,6 +279,7 @@ def run_benchmark(
         power_sampler=power_sampler_meta,
         conditions=conditions_end,
         cells_run=[cell.id for cell in cells],
+        matrix_overrides=matrix_overrides,
         session_id=session_id,
         repeat_index=repeat_index,
         repeat_count=repeat_count,

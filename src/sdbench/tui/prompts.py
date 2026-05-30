@@ -38,8 +38,16 @@ def build_cell_rows(cells: list[CellConfig], caps: Capabilities) -> list[CellRow
 
 
 def full_suite_ids(rows: list[CellRow]) -> list[str]:
-    """Every selectable cell — the deliberate FULL SUITE choice."""
-    return [row.cell.id for row in rows if row.selectable]
+    """Every enabled and selectable cell — the deliberate FULL SUITE choice.
+
+    ``enabled: false`` cells stay opt-in via the interactive picker. They were
+    deliberately marked off by the matrix maintainer (capability outside the
+    paper's scope, optional torch.compile path, MLX-native quantization point
+    backends don't support yet — see ``config/matrix.yaml``); auto-running them
+    from FULL SUITE puts ``failed`` rows in the publication bundle that read as
+    incomplete work rather than the intentional N/A they are.
+    """
+    return [row.cell.id for row in rows if row.selectable and row.cell.enabled]
 
 
 def default_ids(rows: list[CellRow]) -> list[str]:

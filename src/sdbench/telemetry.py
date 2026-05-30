@@ -576,6 +576,12 @@ def _resolve_harness_commit(
         2. PEP 610 ``direct_url.json`` for ``coreml-diffusion-benchmarks`` —
            covers ``uv pip install git+…`` / ``pip install <url>`` installs.
         3. The workspace ``git rev-parse`` result (development from a clone).
+        4. ``git rev-parse`` against the directory the ``sdbench`` package was
+           imported from — catches the "ran from a subdirectory of the clone"
+           case where ``Workspace.resolve`` picked an in-repo cwd that wasn't
+           the repo root and ``git -C`` declined to walk up. Without this the
+           manifest's ``git_sha`` ends up ``null`` despite the harness sitting
+           right there on disk inside a perfectly good .git tree.
     Returning the source lets the manifest reader explain a ``None`` SHA
     instead of leaving the field unattributed."""
     try:
@@ -594,7 +600,35 @@ def _resolve_harness_commit(
     if workspace_sha:
         return workspace_sha, workspace_describe, "workspace"
 
+    package_sha, package_describe = _probe_package_git()
+    if package_sha:
+        return package_sha, package_describe, "package_path"
+
     return None, None, "none"
+
+
+def _probe_package_git() -> tuple[str | None, str | None]:
+    """Probe the sdbench package directory for a git SHA + describe.
+
+    Used as the last-ditch fallback when no build stamp, no PEP 610 metadata,
+    and no workspace .git is reachable. ``git rev-parse`` will walk up to the
+    enclosing repo root on its own, so a clone laid out as
+    ``<repo>/src/sdbench/`` resolves correctly regardless of cwd."""
+    try:
+        import sdbench
+
+        pkg_dir = Path(sdbench.__file__).resolve().parent
+    except Exception:  # noqa: BLE001 — probing must never crash collection.
+        return (None, None)
+    if not pkg_dir.exists():
+        return (None, None)
+    rc_sha, sha, _ = _run(_default_runner, ["git", "-C", str(pkg_dir), "rev-parse", "HEAD"])
+    if rc_sha != 0 or not sha:
+        return (None, None)
+    rc_desc, describe, _ = _run(
+        _default_runner, ["git", "-C", str(pkg_dir), "describe", "--always", "--dirty", "--tags"]
+    )
+    return (sha, describe if rc_desc == 0 and describe else None)
 
 
 def _read_pep610_commit() -> str | None:

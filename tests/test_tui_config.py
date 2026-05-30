@@ -75,7 +75,10 @@ def test_build_cell_rows_locks_unmet_gates_and_defaults():
     assert rows["off"].default_selected is False and rows["off"].selectable is True
     assert rows["gated"].selectable is False  # locked: M2 lacks ANE activation quant
     assert default_ids(list(rows.values())) == ["on"]
-    assert set(full_suite_ids(list(rows.values()))) == {"on", "off"}  # gated excluded
+    # FULL SUITE excludes both the gated cell (can't run on this host) and the
+    # disabled cell (opt-in only). A non-interactive "run everything" pick
+    # must not silently materialise cells the matrix maintainer marked off.
+    assert set(full_suite_ids(list(rows.values()))) == {"on"}
 
 
 # ----- disk report -----
