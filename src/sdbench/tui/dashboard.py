@@ -83,9 +83,32 @@ class DashboardReporter(RunReporter):
         self.detail: dict[str, str] = {cid: "" for cid in self.order}
         self._logs: deque[str] = deque(maxlen=500)
         self._summary: Text | None = None
+        # Multi-run session bookkeeping. ``run_matrix`` fires ``run_done`` after
+        # every pass; without this the pass-1 summary latches and freezes the
+        # screen while passes 2..N run underneath (any-key reads nothing until
+        # the whole session returns). begin_session is duck-typed — only the
+        # session driver calls it; single-pass callers leave repeats=1.
+        self._repeats = 1
+        self._pass = 0
+
+    def begin_session(self, repeats: int) -> None:
+        self._repeats = max(1, repeats)
+        self._pass = 0
 
     def run_start(self, total_cells: int) -> None:
-        self._task = self.progress.add_task("Matrix", total=total_cells)
+        # New pass: drop any latched summary so live progress shows again, and
+        # reset per-cell state + the progress bar instead of stacking a fresh
+        # task on top of the previous pass's bar.
+        self._pass += 1
+        self._summary = None
+        for cid in self.order:
+            self.status[cid] = "pending"
+            self.detail[cid] = ""
+        label = "Matrix" if self._repeats == 1 else f"Matrix · pass {self._pass}/{self._repeats}"
+        if self._task is None:
+            self._task = self.progress.add_task(label, total=total_cells)
+        else:
+            self.progress.reset(self._task, total=total_cells, description=label)
         self._refresh()
 
     def cell_start(self, cell_id: str, index: int, total: int) -> None:
@@ -124,7 +147,11 @@ class DashboardReporter(RunReporter):
         self._refresh()
 
     def run_done(self, records: list) -> None:
-        self.show_summary(records)
+        # Only latch the summary on the final pass; intermediate passes must
+        # leave the live view up so the next pass (and the cooldown between
+        # them) keeps rendering.
+        if self._pass >= self._repeats:
+            self.show_summary(records)
 
     def show_summary(self, records: list) -> None:
         self._summary = summary_text(records)

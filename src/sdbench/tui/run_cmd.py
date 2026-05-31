@@ -353,6 +353,10 @@ def run_session(
         )
 
     session_id = session_id or str(uuid4())
+    # Let a session-aware reporter (the full-screen dashboard) know this is a
+    # multi-pass run so it only latches the summary after the final pass.
+    if hasattr(reporter, "begin_session"):
+        reporter.begin_session(repeats)
     reporter.log(f"[sdbench.dim]session_id={session_id}[/] · {repeats} repeats · cooldown={cooldown_s:.0f}s")
     pass_records: list = []
     for idx in range(repeats):
