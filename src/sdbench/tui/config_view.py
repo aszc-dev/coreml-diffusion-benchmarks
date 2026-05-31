@@ -96,6 +96,25 @@ class MatrixModel:
         self.iterations = None
         self.mode = "publication"
 
+    def cycle_mode(self, power_ok: bool) -> None:
+        """Cycle through the presets: publication → fast → custom → publication.
+
+        Lands on the corresponding preset shape (so ``custom`` is a
+        deliberate "stop snapping me to a preset" choice rather than a
+        no-op). The active preset is shown in the settings panel so the
+        user can see what cycling actually does."""
+        order = ("publication", "fast", "custom")
+        nxt = order[(order.index(self.mode) + 1) % len(order)] if self.mode in order else "publication"
+        if nxt == "publication":
+            self.apply_publication_preset(power_ok)
+        elif nxt == "fast":
+            self.apply_fast_test_preset()
+        else:
+            # ``custom`` keeps the current selection but stops claiming to
+            # be one of the named presets — the saved plan will carry
+            # ``mode=custom`` so a reviewer knows it was hand-tuned.
+            self.mode = "custom"
+
     def apply_fast_test_preset(self) -> None:
         """Snap to the fast-test preset: one cell, one pass, R5.3 floor."""
         head = next((r.cell.id for r in self.rows if r.selectable and r.cell.enabled), None)
@@ -203,7 +222,7 @@ def _render(ws, model: MatrixModel, power_ok: bool, power_reason: str, cfg):
         screen.header("sdbench · configure run", screen.state_text(state), screen.usage_text(ws)),
         Panel(body, title="Matrix", border_style="sdbench.title"),
         screen.footer(
-            "↑/↓ move · space toggle · P publication · T fast-test · +/- repeats "
+            "↑/↓ move · space toggle · m mode (publication/fast/custom) · +/- repeats "
             "· a all · n none · p power · v verbosity · s save · q cancel"
         ),
     )
@@ -249,10 +268,12 @@ def config_view(live, ws, config_path) -> RunPlan | None:
             model.move(1)
         elif key == screen.SPACE:
             model.toggle()
-        elif key in ("P",):
-            model.apply_publication_preset(power_ok)
-        elif key in ("T",):
-            model.apply_fast_test_preset()
+        elif key == "m":
+            # Cycle publication → fast → custom. ``custom`` is the no-op
+            # state — landing on it via ``m`` doesn't undo edits; it only
+            # signals the saved plan was hand-tuned. (Any toggle/select
+            # already drops the model into ``custom`` automatically.)
+            model.cycle_mode(power_ok)
         elif key in ("+", "="):
             # ``=`` is the unshifted ``+`` on US layouts; accept both so the
             # user doesn't have to chord.

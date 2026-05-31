@@ -181,6 +181,33 @@ def test_matrix_model_to_plan_gates_power_on_host_capability():
     assert plan.power_enabled is False
 
 
+def test_matrix_model_cycle_mode_walks_presets():
+    # The 'm' key cycles publication → fast → custom → publication so the
+    # user has one key to discover both presets without colliding with
+    # lowercase 'p' (power).
+    rows = _rows(_cell("alpha"), _cell("beta"))
+    model = MatrixModel(rows)
+    model.apply_publication_preset(power_ok=True)
+    assert model.mode == "publication"
+    model.cycle_mode(power_ok=True)
+    assert model.mode == "fast"
+    model.cycle_mode(power_ok=True)
+    assert model.mode == "custom"
+    model.cycle_mode(power_ok=True)
+    assert model.mode == "publication"
+
+
+def test_matrix_model_cycle_mode_from_custom_lands_on_publication():
+    # Hand-edited plan (custom) → 'm' should snap to the recommended
+    # default rather than do something cryptic.
+    rows = _rows(_cell("alpha"))
+    model = MatrixModel(rows)
+    model.toggle()  # forces custom
+    assert model.mode == "custom"
+    model.cycle_mode(power_ok=True)
+    assert model.mode == "publication"
+
+
 def test_matrix_model_repeats_stepper_keeps_cooldown_sane():
     rows = _rows(_cell("a"))
     model = MatrixModel(rows, initial_repeats=1)
