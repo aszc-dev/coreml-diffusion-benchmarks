@@ -139,25 +139,33 @@ def run_benchmark(
 
     sudo_cached = False
     if power:
-        # Refuse to record power on battery / low-power / noisy host. The
-        # contributor's last run on a 5.4 loadavg with AddressBookManager at
-        # 53% CPU produced numbers no reviewer could trust; gate before sudo
-        # so the operator does not type their password just to be told no.
+        # Battery / low-power are un-waitable: refuse before sudo so the operator
+        # does not type their password just to be told no. A noisy loadavg is the
+        # *waitable* case — the 1-min EWMA carries our own tail between passes, so
+        # we settle on it (refreshing the reading) before every pass instead of
+        # refusing and forcing a restart. The contributor's 5.4-loadavg run with
+        # AddressBookManager at 53% CPU is what this guards against (R6).
         from sdbench.tui.preflight import check_power_env, render_power_env
 
+        host_settled = _await_quiescent_host(reporter)
         env_check = check_power_env()
         render_power_env(env_check)
         if not env_check.ok and not force_power:
             issues = "; ".join(env_check.issues) or "see env check above"
             reporter.log(
                 f"[sdbench.danger]Power measurement REFUSED[/] — {issues}. "
-                "Rerun on AC with a quiet host, or pass --force-power."
+                "Rerun on AC, or pass --force-power."
             )
             power = False
         elif not env_check.ok and force_power:
             reporter.log(
                 "[sdbench.warn]Power env check FAILED[/] but --force-power was set — "
                 "numbers are recorded but should be treated as contaminated."
+            )
+        if power and not host_settled:
+            reporter.log(
+                "[sdbench.warn]Host never settled below the loadavg ceiling[/] — "
+                "power numbers for this pass should be treated as contaminated."
             )
 
     if power:
@@ -434,6 +442,58 @@ def _cooldown_between_passes(cooldown_s: float, reporter) -> None:
         reporter.log(f"[sdbench.dim]still throttled ({thermal.detail}); extra cooldown 30s…[/]")
         time.sleep(30)
         waited += 30
+
+
+def _await_quiescent_host(
+    reporter,
+    *,
+    loadavg_max: float | None = None,
+    cap_s: float = 120.0,
+    poll_s: float = 5.0,
+) -> bool:
+    """Block until the host is quiet enough for a clean power baseline (R6).
+
+    ``loadavg_1m`` is a 1-minute EWMA, so right after a pass it still carries our
+    own tail — a fixed pre-pass refusal would false-positive on every pass after
+    the first. Instead we poll, refreshing the reading each tick, until loadavg
+    falls under ``loadavg_max`` and thermal is not throttled, or ``cap_s`` elapses.
+
+    Returns True if the host settled, False if we gave up at the cap. On give-up
+    the caller flags the pass as contaminated rather than forcing the operator to
+    restart — constant resets are worse than a flagged, recorded pass."""
+    if loadavg_max is None:
+        from sdbench.tui.preflight import POWER_LOADAVG_MAX
+
+        loadavg_max = POWER_LOADAVG_MAX
+    waited = 0.0
+    while True:
+        try:
+            loadavg = os.getloadavg()[0]
+        except (OSError, AttributeError):
+            loadavg = None
+        thermal = check_thermal_state()
+        load_ok = loadavg is None or loadavg <= loadavg_max
+        if load_ok and not thermal.throttled:
+            return True
+        if waited >= cap_s:
+            reasons = []
+            if not load_ok:
+                reasons.append(f"loadavg_1m={loadavg:.2f}>{loadavg_max:.1f}")
+            if thermal.throttled:
+                reasons.append(f"thermal {thermal.detail}")
+            reporter.log(
+                f"[sdbench.warn]Host not quiet after {waited:.0f}s ({'; '.join(reasons)});"
+                " continuing — this pass will be flagged.[/]"
+            )
+            return False
+        load_s = f"{loadavg:.2f}" if loadavg is not None else "?"
+        extra = "" if not thermal.throttled else f", thermal {thermal.detail}"
+        reporter.log(
+            f"[sdbench.dim]waiting for quiet host: loadavg_1m={load_s} "
+            f"(target ≤{loadavg_max:.1f}){extra} · {waited:.0f}/{cap_s:.0f}s[/]"
+        )
+        time.sleep(poll_s)
+        waited += poll_s
 
 
 # Raw captured output is loaded with ANSI/control codes from torch/coremltools/tqdm.

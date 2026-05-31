@@ -116,7 +116,12 @@ class PowerEnvCheck:
 
     @property
     def ok(self) -> bool:
-        return self.ac_ok and self.low_power_ok and self.loadavg_ok
+        # Only the un-waitable conditions hard-refuse here. A noisy loadavg is
+        # *waited out* before each pass (see run_cmd._await_quiescent_host): the
+        # 1-min EWMA carries our own tail between passes, so refusing on it would
+        # false-positive on every pass after the first. loadavg_ok stays exposed
+        # as an advisory/flag, but it does not gate ``ok``.
+        return self.ac_ok and self.low_power_ok
 
 
 def check_power_env(loadavg_max: float = POWER_LOADAVG_MAX) -> PowerEnvCheck:

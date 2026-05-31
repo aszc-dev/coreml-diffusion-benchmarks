@@ -57,12 +57,15 @@ def test_check_power_env_refuses_low_power_mode(monkeypatch):
     assert any("low-power" in msg for msg in check.issues)
 
 
-def test_check_power_env_refuses_noisy_host(monkeypatch):
+def test_check_power_env_flags_noisy_host_without_refusing(monkeypatch):
     # 5.4 is the loadavg the bad contributor run reproduced — a useful canary.
+    # A noisy host is no longer refused at env-check time: the 1-min EWMA carries
+    # our own tail between passes, so loadavg is waited out before each pass
+    # (run_cmd._await_quiescent_host) and only flagged here, never gating ``ok``.
     _patch_env(monkeypatch, ac=True, low_power=False, loadavg=5.4)
 
     check = preflight.check_power_env(loadavg_max=2.0)
 
-    assert not check.ok
+    assert check.ok  # AC + not low-power: power numbers are the right *type*
     assert not check.loadavg_ok
     assert any("loadavg" in msg for msg in check.issues)
