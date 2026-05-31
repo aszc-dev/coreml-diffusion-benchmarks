@@ -220,7 +220,7 @@ def _run_flow(live, ws: Workspace, config_path) -> None:
     from sdbench.tui.config_view import config_view
     from sdbench.tui.convert_orchestrator import plan_conversions
     from sdbench.tui.dashboard import DashboardReporter
-    from sdbench.tui.run_cmd import run_benchmark
+    from sdbench.tui.run_cmd import run_benchmark, run_session
     from sdbench.tui.runplan import load_runplan
 
     if not ws.runplan_path.exists():
@@ -245,7 +245,24 @@ def _run_flow(live, ws: Workspace, config_path) -> None:
         live.start()
 
     dashboard = DashboardReporter(live, ws, cell_ids=plan.cell_ids)
-    records = run_benchmark(ws, config_path, reporter=dashboard)
+    # Multi-run sessions dispatch through ``run_session`` (cooldown + aggregator);
+    # single-pass plans stay on the original path so a fast-test preset doesn't
+    # pay for session manifest writes it doesn't need.
+    if plan.repeats > 1:
+        records = run_session(
+            ws,
+            config_path,
+            repeats=plan.repeats,
+            cooldown_s=plan.cooldown_s,
+            cell_ids=plan.cell_ids,
+            power=plan.power_enabled,
+            verbosity=plan.verbosity,
+            use_plan=True,
+            reporter=dashboard,
+            iterations=plan.iterations,
+        )
+    else:
+        records = run_benchmark(ws, config_path, reporter=dashboard)
     dashboard.show_summary(records)
     screen.read_key()
     # Offer the report flow inline so the contributor lands the bundle in one

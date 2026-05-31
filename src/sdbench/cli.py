@@ -90,14 +90,32 @@ def run(
     verbosity: Annotated[str | None, typer.Option("--verbosity", help="quiet | normal | verbose.")] = None,
     use_plan: Annotated[bool, typer.Option("--use-plan/--no-use-plan", help="Use the run plan saved by `config`.")] = True,
     force_power: Annotated[bool, typer.Option("--force-power", help="Record power even if the env check fails (battery/low-power/noisy host). The numbers will be flagged.")] = False,
-    repeats: Annotated[int, typer.Option("--repeats", help="Repeat the matrix N times as one session; per-cell median + p10/p90 of latency, power and energy are aggregated to sessions/<id>/aggregated.jsonl. Use N>=3 to characterise between-run noise on energy (R5.4).")] = 1,
-    cooldown_s: Annotated[float, typer.Option("--cooldown-s", help="Seconds to sleep between repeats (then gate on thermal state). Ignored when --repeats=1.")] = 30.0,
+    repeats: Annotated[int | None, typer.Option("--repeats", help="Repeat the matrix N times as one session; per-cell median + p10/p90 of latency, power and energy are aggregated to sessions/<id>/aggregated.jsonl. Defaults to the saved run plan; pass 1 to force a single pass. Use N>=3 to characterise between-run noise on energy (R5.4).")] = None,
+    cooldown_s: Annotated[float | None, typer.Option("--cooldown-s", help="Seconds to sleep between repeats (then gate on thermal state). Ignored when repeats=1. Defaults to the saved run plan.")] = None,
 ) -> None:
     """Run the benchmark with live progress, minimal-root power, and upserted results."""
     from sdbench.tui.run_cmd import run_benchmark, run_session
+    from sdbench.tui.runplan import load_runplan
     from sdbench.tui.workspace import Workspace
 
     ws = Workspace.resolve(workspace)
+    # Fall back to the saved plan's multi-run settings when the CLI didn't
+    # override them — the TUI's default plan is publication-grade
+    # (repeats=5), and a bare ``sdbench run`` ought to honour that rather
+    # than silently regress to single-pass.
+    if use_plan and ws.runplan_path.exists():
+        try:
+            plan = load_runplan(ws.runplan_path)
+            if repeats is None:
+                repeats = plan.repeats
+            if cooldown_s is None:
+                cooldown_s = plan.cooldown_s
+        except (OSError, ValueError, KeyError):
+            pass  # malformed plan — defaults below apply.
+    if repeats is None:
+        repeats = 1
+    if cooldown_s is None:
+        cooldown_s = 30.0
     if repeats > 1:
         run_session(
             ws,

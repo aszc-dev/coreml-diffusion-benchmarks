@@ -79,6 +79,7 @@ def run_benchmark(
     session_id: str | None = None,
     repeat_index: int | None = None,
     repeat_count: int | None = None,
+    iterations: int | None = None,
 ):
     _silence_libraries()
     cfg = load_benchmark_config(config_path)
@@ -90,6 +91,8 @@ def run_benchmark(
         power = plan.power_enabled if plan else False
     if verbosity is None:
         verbosity = plan.verbosity if plan else "normal"
+    if iterations is None and plan is not None:
+        iterations = plan.iterations
     run_conditions = plan.run_conditions if plan else "default CLI run"
 
     if reporter is None:
@@ -101,7 +104,10 @@ def run_benchmark(
     if not cells:
         reporter.log("No cells selected; nothing to run.")
         return []
-    cfg_run = replace(cfg, cells=cells)
+    # Plan/CLI iterations override applies *only* to this invocation — never
+    # rewrites matrix.yaml. Used by the fast-test preset to clamp to the
+    # R5.3 floor (10) without touching the publication-grade default of 30.
+    cfg_run = replace(cfg, cells=cells, iterations=iterations) if iterations else replace(cfg, cells=cells)
     # If RUN_ID is exported by scripts/run.sh (so the plist filename and the
     # manifest run_id agree), honour it. Otherwise mint a fresh uuid4.
     run_id = run_id or os.environ.get("SDBENCH_RUN_ID") or str(uuid4())
@@ -307,6 +313,7 @@ def run_session(
     reporter=None,
     session_id: str | None = None,
     force_power: bool = False,
+    iterations: int | None = None,
 ):
     """Run the matrix ``repeats`` times in one session and aggregate.
 
@@ -342,6 +349,7 @@ def run_session(
             use_plan=use_plan,
             reporter=reporter,
             force_power=force_power,
+            iterations=iterations,
         )
 
     session_id = session_id or str(uuid4())
@@ -361,6 +369,7 @@ def run_session(
             session_id=session_id,
             repeat_index=idx,
             repeat_count=repeats,
+            iterations=iterations,
         )
         pass_records.append(records)
         if idx + 1 < repeats:

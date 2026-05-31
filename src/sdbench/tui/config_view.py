@@ -16,8 +16,14 @@ from sdbench.config import load_benchmark_config
 from sdbench.tui import screen
 from sdbench.tui.capabilities import detect_capabilities
 from sdbench.tui.config_cmd import power_available
-from sdbench.tui.prompts import build_cell_rows
-from sdbench.tui.runplan import RunPlan, load_runplan, save_runplan
+from sdbench.tui.prompts import build_cell_rows, full_suite_ids
+from sdbench.tui.runplan import (
+    RunPlan,
+    fast_test_preset,
+    load_runplan,
+    publication_preset,
+    save_runplan,
+)
 
 _VERBOSITY = ["normal", "verbose", "quiet"]
 
@@ -30,6 +36,9 @@ class MatrixModel:
         *,
         initial_selected: set[str] | None = None,
         initial_verbosity: str | None = None,
+        initial_mode: str = "publication",
+        initial_repeats: int = 5,
+        initial_iterations: int | None = None,
     ) -> None:
         self.rows = rows
         self.index = 0
@@ -44,6 +53,10 @@ class MatrixModel:
             self.selected = {r.cell.id for r in rows if r.default_selected}
         self.power = power_default
         self.verbosity = initial_verbosity if initial_verbosity in _VERBOSITY else "normal"
+        self.mode = initial_mode if initial_mode in ("publication", "fast", "custom") else "publication"
+        self.repeats = max(1, int(initial_repeats))
+        self.cooldown_s = 30.0 if self.repeats > 1 else 0.0
+        self.iterations = initial_iterations  # None = use matrix.yaml default
 
     def move(self, delta: int) -> None:
         if self.rows:
@@ -55,18 +68,67 @@ class MatrixModel:
             return
         cid = row.cell.id
         self.selected.discard(cid) if cid in self.selected else self.selected.add(cid)
+        # Manual cell editing means the user is no longer on a clean preset.
+        self.mode = "custom"
 
     def select_all(self) -> None:
         self.selected = {r.cell.id for r in self.rows if r.selectable}
+        self.mode = "custom"
 
     def clear(self) -> None:
         self.selected.clear()
+        self.mode = "custom"
 
     def cycle_verbosity(self) -> None:
         self.verbosity = _VERBOSITY[(_VERBOSITY.index(self.verbosity) + 1) % len(_VERBOSITY)]
+        self.mode = "custom"
+
+    def apply_publication_preset(self, power_ok: bool) -> None:
+        """Snap to the publication preset: every enabled+selectable cell,
+        multi-run aggregate, power on if the host supports it. Reads exactly
+        like :func:`publication_preset` — the TUI is a thin editor over the
+        same shape the headless flow produces."""
+        self.selected = set(full_suite_ids(self.rows))
+        self.power = power_ok
+        self.verbosity = "normal"
+        self.repeats = 5
+        self.cooldown_s = 30.0
+        self.iterations = None
+        self.mode = "publication"
+
+    def apply_fast_test_preset(self) -> None:
+        """Snap to the fast-test preset: one cell, one pass, R5.3 floor."""
+        head = next((r.cell.id for r in self.rows if r.selectable and r.cell.enabled), None)
+        if head is None:
+            # No enabled+selectable cell — fall back to any selectable so the
+            # preset still lands somewhere actionable.
+            head = next((r.cell.id for r in self.rows if r.selectable), None)
+        self.selected = {head} if head else set()
+        self.power = False
+        self.verbosity = "quiet"
+        self.repeats = 1
+        self.cooldown_s = 0.0
+        self.iterations = 10
+        self.mode = "fast"
 
     def chosen_ids(self) -> list[str]:
         return [r.cell.id for r in self.rows if r.cell.id in self.selected]
+
+    def to_plan(self, *, power_ok: bool, run_conditions: str = "") -> RunPlan:
+        """Materialise the current model state as a :class:`RunPlan`.
+
+        Power is gated on host capability separately so the saved plan never
+        promises measurement on a machine that can't deliver it."""
+        return RunPlan(
+            cell_ids=self.chosen_ids(),
+            power_enabled=bool(self.power and power_ok),
+            verbosity=self.verbosity,
+            run_conditions=run_conditions,
+            repeats=self.repeats,
+            cooldown_s=self.cooldown_s,
+            iterations=self.iterations,
+            mode=self.mode,
+        )
 
 
 def _matrix_table(model: MatrixModel) -> Table:
@@ -90,8 +152,36 @@ def _matrix_table(model: MatrixModel) -> Table:
     return table
 
 
+_MODE_STYLE = {
+    "publication": ("sdbench.ok", "publication (multi-run aggregate, default)"),
+    "fast": ("sdbench.warn", "fast test (1 pass, 10 iters, no power)"),
+    "custom": ("sdbench.title", "custom"),
+}
+
+
 def _render(ws, model: MatrixModel, power_ok: bool, power_reason: str, cfg):
     settings = Text()
+    style, label = _MODE_STYLE.get(model.mode, _MODE_STYLE["custom"])
+    settings.append("mode ", style="sdbench.dim")
+    settings.append(f"{label}\n", style=style)
+
+    settings.append("repeats ", style="sdbench.dim")
+    settings.append(str(model.repeats), style="sdbench.title")
+    if model.repeats > 1:
+        settings.append(
+            f" (aggregate median + p10/p90, cooldown {model.cooldown_s:.0f}s)   ",
+            style="sdbench.dim",
+        )
+    else:
+        settings.append("  (single pass, no aggregate)   ", style="sdbench.dim")
+
+    settings.append("iters ", style="sdbench.dim")
+    if model.iterations:
+        settings.append(f"{model.iterations} (override)   ", style="sdbench.warn")
+    else:
+        settings.append(f"{cfg.iterations} (matrix.yaml)   ", style="sdbench.title")
+
+    settings.append("\n")
     if power_ok:
         settings.append("power ", style="sdbench.dim")
         settings.append("ON " if model.power else "off ", style="sdbench.ok" if model.power else "sdbench.warn")
@@ -112,7 +202,10 @@ def _render(ws, model: MatrixModel, power_ok: bool, power_reason: str, cfg):
     return screen.frame(
         screen.header("sdbench · configure run", screen.state_text(state), screen.usage_text(ws)),
         Panel(body, title="Matrix", border_style="sdbench.title"),
-        screen.footer("↑/↓ move · space toggle · f FULL SUITE · a all · n none · p power · v verbosity · s save · q cancel"),
+        screen.footer(
+            "↑/↓ move · space toggle · P publication · T fast-test · +/- repeats "
+            "· a all · n none · p power · v verbosity · s save · q cancel"
+        ),
     )
 
 
@@ -131,10 +224,18 @@ def config_view(live, ws, config_path) -> RunPlan | None:
     power_ok, power_reason = power_available()
     model = MatrixModel(
         rows,
-        power_default=bool(saved.power_enabled) and power_ok if saved else False,
+        power_default=bool(saved.power_enabled) and power_ok if saved else power_ok,
         initial_selected=set(saved.cell_ids) if saved else None,
         initial_verbosity=saved.verbosity if saved else None,
+        initial_mode=saved.mode if saved else "publication",
+        initial_repeats=saved.repeats if saved else 5,
+        initial_iterations=saved.iterations if saved else None,
     )
+    # First visit: snap to the publication preset so the user lands on a
+    # ready-to-save plan that reflects what the tool was built for (the
+    # multi-run aggregate). Editing anything flips ``mode`` to ``custom``.
+    if saved is None:
+        model.apply_publication_preset(power_ok)
 
     while True:
         live.update(_render(ws, model, power_ok, power_reason, cfg))
@@ -148,23 +249,33 @@ def config_view(live, ws, config_path) -> RunPlan | None:
             model.move(1)
         elif key == screen.SPACE:
             model.toggle()
-        elif key == "f":
-            model.select_all()
-        elif key == "a":
+        elif key in ("P",):
+            model.apply_publication_preset(power_ok)
+        elif key in ("T",):
+            model.apply_fast_test_preset()
+        elif key in ("+", "="):
+            # ``=`` is the unshifted ``+`` on US layouts; accept both so the
+            # user doesn't have to chord.
+            model.repeats = min(model.repeats + 1, 20)
+            if model.repeats > 1 and model.cooldown_s == 0.0:
+                model.cooldown_s = 30.0
+            model.mode = "custom"
+        elif key == "-":
+            model.repeats = max(model.repeats - 1, 1)
+            if model.repeats == 1:
+                model.cooldown_s = 0.0
+            model.mode = "custom"
+        elif key in ("f", "a"):
             model.select_all()
         elif key == "n":
             model.clear()
         elif key == "p" and power_ok:
             model.power = not model.power
+            model.mode = "custom"
         elif key == "v":
             model.cycle_verbosity()
         elif key == "s" and model.chosen_ids():
-            plan = RunPlan(
-                cell_ids=model.chosen_ids(),
-                power_enabled=model.power and power_ok,
-                verbosity=model.verbosity,
-                run_conditions="",
-            )
+            plan = model.to_plan(power_ok=power_ok)
             save_runplan(plan, ws.runplan_path)
             return plan
 
