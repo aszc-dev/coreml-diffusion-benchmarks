@@ -4,6 +4,8 @@ Benchmark harness for comparing Stable Diffusion 1.5 UNet execution across Apple
 
 The benchmark measures only the UNet. VAE and CLIP/text-encoder execution are outside the timed and power-measured path.
 
+**Full writeup:** [The ANE runs the SD1.5 UNet at 6-7x lower energy than GPU/MPS — at the same speed](https://log.aszc.dev/ane-vs-gpu-mps-sd15-unet-energy/) — methodology, the n=7 multi-run numbers, and the energy-vs-numerical-divergence tradeoff.
+
 ## Quick start
 
 The tool ships a guided terminal flow. Run it with no arguments and it walks you through getting the checkpoint, converting artifacts, configuring a run, running it, and cleaning up:
