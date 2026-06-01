@@ -79,6 +79,19 @@ def test_waits_on_thermal_throttle(monkeypatch):
     assert settled is True
 
 
+def test_baseline_raises_the_ceiling(monkeypatch):
+    # On a macOS-26 box idling at 2.9, the old absolute 2.0 ceiling was
+    # unreachable. baseline=2.9 + margin 1.0 => gate 3.9, so a 3.1 reading passes.
+    monkeypatch.setattr(run_cmd.os, "getloadavg", lambda: (3.1, 0.0, 0.0))
+    _quiet_thermal(monkeypatch)
+    _no_sleep(monkeypatch)
+
+    reporter = _Reporter()
+    settled = run_cmd._await_quiescent_host(reporter, loadavg_baseline=2.9, cap_s=120, poll_s=5)
+
+    assert settled is True
+
+
 def test_loadavg_unavailable_does_not_block(monkeypatch):
     def _raise():
         raise OSError("getloadavg unavailable")

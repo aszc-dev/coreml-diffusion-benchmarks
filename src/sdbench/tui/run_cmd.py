@@ -80,6 +80,7 @@ def run_benchmark(
     repeat_index: int | None = None,
     repeat_count: int | None = None,
     iterations: int | None = None,
+    loadavg_baseline: float | None = None,
 ):
     _silence_libraries()
     cfg = load_benchmark_config(config_path)
@@ -145,9 +146,22 @@ def run_benchmark(
         # we settle on it (refreshing the reading) before every pass instead of
         # refusing and forcing a restart. The contributor's 5.4-loadavg run with
         # AddressBookManager at 53% CPU is what this guards against (R6).
-        from sdbench.tui.preflight import check_power_env, render_power_env
+        from sdbench.tui.preflight import (
+            check_power_env,
+            loadavg_ceiling,
+            measure_idle_loadavg,
+            render_power_env,
+        )
 
-        host_settled = _await_quiescent_host(reporter)
+        # Single-pass / ad-hoc runs have no session-level baseline threaded in;
+        # measure it here so even a lone `run --cell X --power` gates against
+        # this host's own idle floor rather than the absolute fallback.
+        if loadavg_baseline is None:
+            loadavg_baseline = measure_idle_loadavg()
+        ceiling = loadavg_ceiling(loadavg_baseline)
+        base_s = f"{loadavg_baseline:.2f}" if loadavg_baseline is not None else "n/a"
+        reporter.log(f"[sdbench.dim]loadavg baseline={base_s} · pass gate ≤{ceiling:.2f}[/]")
+        host_settled = _await_quiescent_host(reporter, loadavg_baseline=loadavg_baseline)
         env_check = check_power_env()
         render_power_env(env_check)
         if not env_check.ok and not force_power:
@@ -366,6 +380,15 @@ def run_session(
     if hasattr(reporter, "begin_session"):
         reporter.begin_session(repeats)
     reporter.log(f"[sdbench.dim]session_id={session_id}[/] · {repeats} repeats · cooldown={cooldown_s:.0f}s")
+    # Measure this host's idle loadavg floor ONCE, before any pass loads it, so
+    # every pass gates against the same baseline + margin (preflight.loadavg_*).
+    # The operator has already quiesced their background by this point.
+    loadavg_baseline = None
+    if power is not False:
+        from sdbench.tui.preflight import measure_idle_loadavg
+
+        reporter.log("[sdbench.dim]sampling idle loadavg baseline…[/]")
+        loadavg_baseline = measure_idle_loadavg()
     pass_records: list = []
     for idx in range(repeats):
         reporter.log(f"[sdbench.dim]── repeat {idx + 1}/{repeats} ──[/]")
@@ -382,6 +405,7 @@ def run_session(
             repeat_index=idx,
             repeat_count=repeats,
             iterations=iterations,
+            loadavg_baseline=loadavg_baseline,
         )
         pass_records.append(records)
         if idx + 1 < repeats:
@@ -447,6 +471,7 @@ def _cooldown_between_passes(cooldown_s: float, reporter) -> None:
 def _await_quiescent_host(
     reporter,
     *,
+    loadavg_baseline: float | None = None,
     loadavg_max: float | None = None,
     cap_s: float = 120.0,
     poll_s: float = 5.0,
@@ -456,15 +481,21 @@ def _await_quiescent_host(
     ``loadavg_1m`` is a 1-minute EWMA, so right after a pass it still carries our
     own tail — a fixed pre-pass refusal would false-positive on every pass after
     the first. Instead we poll, refreshing the reading each tick, until loadavg
-    falls under ``loadavg_max`` and thermal is not throttled, or ``cap_s`` elapses.
+    falls under the ceiling and thermal is not throttled, or ``cap_s`` elapses.
+
+    The ceiling is derived from the host's *own* measured idle baseline plus a
+    margin (``loadavg_baseline`` → preflight.loadavg_ceiling). An absolute
+    ceiling is per-machine garbage — macOS 26 idles a 10-core M2 Pro near 3.0 —
+    so without a baseline we fall back to the absolute ``POWER_LOADAVG_MAX``.
+    Pass ``loadavg_max`` to override the computed ceiling directly (tests).
 
     Returns True if the host settled, False if we gave up at the cap. On give-up
     the caller flags the pass as contaminated rather than forcing the operator to
     restart — constant resets are worse than a flagged, recorded pass."""
     if loadavg_max is None:
-        from sdbench.tui.preflight import POWER_LOADAVG_MAX
+        from sdbench.tui.preflight import loadavg_ceiling
 
-        loadavg_max = POWER_LOADAVG_MAX
+        loadavg_max = loadavg_ceiling(loadavg_baseline)
     waited = 0.0
     while True:
         try:

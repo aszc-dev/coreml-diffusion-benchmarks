@@ -57,6 +57,29 @@ def test_check_power_env_refuses_low_power_mode(monkeypatch):
     assert any("low-power" in msg for msg in check.issues)
 
 
+def test_measure_idle_loadavg_takes_median(monkeypatch):
+    readings = iter([3.0, 2.8, 2.9, 5.0, 2.7])  # one transient spike
+    monkeypatch.setattr(preflight.os, "getloadavg", lambda: (next(readings), 0.0, 0.0))
+
+    base = preflight.measure_idle_loadavg(samples=5, sleep=lambda _s: None)
+
+    assert base == 2.9  # median rejects the 5.0 spike
+
+
+def test_measure_idle_loadavg_none_when_unavailable(monkeypatch):
+    monkeypatch.setattr(preflight.os, "getloadavg", lambda: (_ for _ in ()).throw(OSError()))
+
+    assert preflight.measure_idle_loadavg(sleep=lambda _s: None) is None
+
+
+def test_loadavg_ceiling_is_baseline_plus_margin():
+    assert preflight.loadavg_ceiling(2.9, margin=1.0) == 3.9
+
+
+def test_loadavg_ceiling_falls_back_to_absolute_without_baseline():
+    assert preflight.loadavg_ceiling(None) == preflight.POWER_LOADAVG_MAX
+
+
 def test_check_power_env_flags_noisy_host_without_refusing(monkeypatch):
     # 5.4 is the loadavg the bad contributor run reproduced — a useful canary.
     # A noisy host is no longer refused at env-check time: the 1-min EWMA carries

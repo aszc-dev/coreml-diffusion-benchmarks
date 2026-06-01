@@ -17,10 +17,53 @@ from sdbench import telemetry
 from sdbench.thermal import check_thermal_state
 from sdbench.tui.console import console, human_bytes
 
-# A 10-core M2 Pro idles around loadavg ≈ 0.5. The threshold needs to flag
-# sustained noisy backgrounds (Spotlight, Time Machine, that AddressBookManager
-# regression Apple shipped in macOS 26) without flagging a healthy idle host.
-POWER_LOADAVG_MAX = 2.0
+# An absolute loadavg ceiling is per-machine garbage: macOS counts threads in
+# uninterruptible wait, not just runnable CPU, and macOS 26 idles a 10-core M2
+# Pro around 2.5–3.0 once Spotlight/AddressBookManager/etc. are accounted for —
+# the old "idles ≈ 0.5" assumption is dead. So we don't gate on an absolute
+# number; we measure the host's *own* idle baseline once (with the operator's
+# background already quiesced) and gate each pass on baseline + a margin. That
+# catches *added* contamination (the intent of R6) instead of the box's floor.
+#
+# POWER_LOADAVG_MAX stays only as a fallback ceiling when no baseline was
+# measured (e.g. a single ad-hoc run that skipped the session baseline step).
+POWER_LOADAVG_MAX = 4.0
+
+# How far above the measured idle baseline a pass may sit before its power
+# numbers are treated as contaminated. Absolute headroom, not a ratio: a busy
+# unrelated process adds roughly one unit of loadavg per pinned core, and we
+# want to flag ~one extra busy core's worth of drift.
+LOADAVG_MARGIN = 1.0
+
+
+def measure_idle_loadavg(samples: int = 5, interval_s: float = 2.0, *, sleep=None) -> float | None:
+    """Median 1-min loadavg over a short window — the host's own idle floor.
+
+    Sampled once at session start, *after* the operator has quiesced their
+    background, so it captures this machine/OS's baseline rather than assuming
+    one. The median rejects a single transient spike. Returns None where
+    ``getloadavg`` is unavailable (the gate then falls back to the absolute
+    ceiling)."""
+    import time as _time
+
+    sleep = sleep or _time.sleep
+    readings: list[float] = []
+    for i in range(max(1, samples)):
+        try:
+            readings.append(os.getloadavg()[0])
+        except (OSError, AttributeError):
+            return None
+        if i + 1 < samples:
+            sleep(interval_s)
+    readings.sort()
+    return readings[len(readings) // 2]
+
+
+def loadavg_ceiling(baseline: float | None, margin: float = LOADAVG_MARGIN) -> float:
+    """Per-pass loadavg gate: idle baseline + margin, or the absolute fallback."""
+    if baseline is None:
+        return POWER_LOADAVG_MAX
+    return baseline + margin
 
 
 @dataclass(frozen=True)
