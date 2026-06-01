@@ -28,15 +28,29 @@ def summarize_power(
     active_end_s: float,
     timed_iterations: int,
 ) -> PowerSummary:
+    # Per-engine power is the *median* sample over each window, not the mean
+    # (R6.4). The harness and the sampler are separate processes aligned only by
+    # wall clock, so the recorded ``[start, end)`` bounds drift by up to a sample
+    # interval relative to the actual GPU ramp: a handful of full-power (~20 W)
+    # samples leak into the idle baseline window, and a handful of near-zero
+    # samples leak into the active window. The mean inherits that contamination —
+    # an idle baseline whose true level is 0 W reads 2–8 W once a few leaked
+    # active samples are averaged in, which is then subtracted from active and
+    # collapses energy/step by up to 50% pass-to-pass (observed spread 0.32–0.77
+    # on an otherwise-idle host). The median rejects those edge samples because
+    # the window is dominated by the steady state on both sides, and it is the
+    # right statistic for a *per-step steady-state* cost anyway: we want the
+    # settled cost of one UNet step, not one amortised over the engine's
+    # spin-up/down ramp. This mirrors R5's "report median latency, never mean".
     active = [sample for sample in samples if active_start_s <= sample.timestamp_s < active_end_s]
     baseline = [sample for sample in samples if sample.timestamp_s < active_start_s or sample.timestamp_s >= active_end_s]
     if not active:
         return PowerSummary(0.0, 0.0, 0.0, 0.0)
 
-    baseline_gpu = _average([sample.gpu_w for sample in baseline])
-    baseline_ane = _average([sample.ane_w for sample in baseline])
-    gpu_power = max(0.0, _average([sample.gpu_w for sample in active]) - baseline_gpu)
-    ane_power = max(0.0, _average([sample.ane_w for sample in active]) - baseline_ane)
+    baseline_gpu = _median([sample.gpu_w for sample in baseline])
+    baseline_ane = _median([sample.ane_w for sample in baseline])
+    gpu_power = max(0.0, _median([sample.gpu_w for sample in active]) - baseline_gpu)
+    ane_power = max(0.0, _median([sample.ane_w for sample in active]) - baseline_ane)
     duration = active_end_s - active_start_s
     total_energy = (gpu_power + ane_power) * duration
     per_step = total_energy / timed_iterations if timed_iterations else 0.0
@@ -48,8 +62,15 @@ def summarize_power(
     )
 
 
-def _average(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
 def parse_powermetrics_plist(path: str | Path) -> list[PowerSample]:

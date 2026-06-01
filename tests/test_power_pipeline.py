@@ -8,6 +8,7 @@ from sdbench.power import (
     PowerSample,
     apply_power_to_records,
     parse_powermetrics_plist,
+    summarize_power,
 )
 from sdbench.results import BenchmarkRecord, load_jsonl, write_jsonl
 from sdbench.timing import run_timed_steps
@@ -117,6 +118,38 @@ def test_apply_power_multi_cell_baseline_is_not_contaminated():
     a, b = updated[0], updated[1]
     assert a.gpu_power_w == 9.0 and a.ane_power_w == 4.5
     assert b.gpu_power_w == 19.0 and b.ane_power_w == 7.5
+
+
+def test_summarize_power_median_rejects_window_leak():
+    # The window bounds are wall-clock-aligned across two processes, so a few
+    # full-power active samples leak into the idle baseline and a few near-zero
+    # ramp samples leak into the active window. A mean would read a contaminated
+    # ~several-watt baseline and a depressed active average; the median rejects
+    # both because each window is dominated by its steady state. Steady GPU is
+    # 20 W, true idle is 0 W -> median net 20 W, mean net would be well under.
+    def block(times, gpu, ane):
+        return [PowerSample(timestamp_s=t, cpu_w=1.0, gpu_w=gpu, ane_w=ane) for t in times]
+
+    # baseline window [8,10): mostly 0 W idle, but two leaked 20 W ramp samples
+    baseline = block([8.0, 8.5, 9.0], 0.0, 0.0) + block([9.5, 9.9], 20.0, 0.0)
+    # active window [10,12): mostly 20 W, but two leaked near-zero edge samples
+    active = block([10.0, 10.2], 0.0, 0.0) + block([10.5, 11.0, 11.5], 20.0, 0.0)
+    summary = summarize_power(baseline + active, 10.0, 12.0, timed_iterations=10)
+
+    # median baseline = 0, median active = 20 -> net 20 W, unaffected by the leak
+    assert summary.gpu_power_w == 20.0
+    assert summary.energy_per_unet_step_j == 20.0 * (12.0 - 10.0) / 10
+
+
+def test_summarize_power_even_count_median_averages_middle_two():
+    samples = (
+        [PowerSample(timestamp_s=t, cpu_w=1.0, gpu_w=0.0, ane_w=0.0) for t in (8.0, 9.0)]
+        + [PowerSample(timestamp_s=10.0, cpu_w=1.0, gpu_w=10.0, ane_w=0.0),
+           PowerSample(timestamp_s=11.0, cpu_w=1.0, gpu_w=20.0, ane_w=0.0)]
+    )
+    summary = summarize_power(samples, 10.0, 12.0, timed_iterations=10)
+
+    assert summary.gpu_power_w == 15.0  # (10 + 20) / 2, idle baseline 0
 
 
 def test_apply_power_skips_failed_and_missing_window_records():
