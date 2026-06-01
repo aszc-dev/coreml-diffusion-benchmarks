@@ -52,7 +52,7 @@ def run_config(ws: Workspace, config_path) -> RunPlan | None:
         "Pick a preset (or customise):",
         choices=[
             questionary.Choice(
-                "Publication — full matrix, 5 repeats, aggregate median + p10/p90 (default)",
+                "Publication — full matrix, 7 repeats, aggregate median + p10/p90 (default)",
                 value="publication",
             ),
             questionary.Choice(

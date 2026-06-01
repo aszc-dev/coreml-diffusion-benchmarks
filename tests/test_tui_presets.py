@@ -57,7 +57,7 @@ def _rows(*cells: CellConfig):
 def test_publication_preset_shape():
     plan = publication_preset(["a", "b"], power_enabled=True)
     assert plan.mode == "publication"
-    assert plan.repeats == 5
+    assert plan.repeats == 7
     assert plan.cooldown_s == 30.0
     assert plan.iterations is None  # defer to matrix.yaml
     assert plan.power_enabled is True
@@ -147,7 +147,7 @@ def test_matrix_model_publication_preset_selects_enabled_only():
     assert model.mode == "publication"
     assert model.selected == {"on"}  # opt-in cell stays opt-in
     assert model.power is True
-    assert model.repeats == 5
+    assert model.repeats == 7
 
 
 def test_matrix_model_fast_test_preset_picks_first_enabled_cell():

@@ -7,7 +7,7 @@ Persisted as JSON under the workspace state dir.
 
 Two presets cover ~95 % of intent:
 
-* :func:`publication_preset` — the default ``sdbench`` is meant for. Repeats=5
+* :func:`publication_preset` — the default ``sdbench`` is meant for. Repeats=7
   feeds the aggregator's median + p10/p90 over enough passes for
   ``validate-report`` to accept the energy spread, power on, full matrix.
 * :func:`fast_test_preset` — quick iteration during development. Repeats=1,
@@ -63,18 +63,19 @@ def publication_preset(
 ) -> RunPlan:
     """The default — multi-run aggregate suitable for the publication bundle.
 
-    Repeats=5 puts every cell over the ``n_runs_ok >= 3`` floor
-    ``validate-report`` enforces, with two extra passes of margin for a cell
-    that fails one. Iterations falls back to the matrix's own setting (the
-    canonical 30) so within-pass sampling noise is already tamed. Cooldown of
-    30 s + the harness's own thermal gate keeps each pass starting from a
-    comparable cold state."""
+    Repeats=7 puts every cell over the ``n_runs_ok >= 3`` floor
+    ``validate-report`` enforces, with four extra passes of margin so a single
+    outlier weighs ~14 % instead of 20 % — tightening the p10/p90 energy band
+    on cells like apple-ane that show a one-run spread. Iterations falls back
+    to the matrix's own setting (the canonical 30) so within-pass sampling
+    noise is already tamed. Cooldown of 30 s + the harness's own thermal gate
+    keeps each pass starting from a comparable cold state."""
     return RunPlan(
         cell_ids=list(cell_ids),
         power_enabled=power_enabled,
         verbosity="normal",
         run_conditions=run_conditions,
-        repeats=5,
+        repeats=7,
         cooldown_s=30.0,
         iterations=None,
         mode="publication",

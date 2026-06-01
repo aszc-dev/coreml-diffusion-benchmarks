@@ -37,7 +37,7 @@ class MatrixModel:
         initial_selected: set[str] | None = None,
         initial_verbosity: str | None = None,
         initial_mode: str = "publication",
-        initial_repeats: int = 5,
+        initial_repeats: int = 7,
         initial_iterations: int | None = None,
     ) -> None:
         self.rows = rows
@@ -91,7 +91,7 @@ class MatrixModel:
         self.selected = set(full_suite_ids(self.rows))
         self.power = power_ok
         self.verbosity = "normal"
-        self.repeats = 5
+        self.repeats = 7
         self.cooldown_s = 30.0
         self.iterations = None
         self.mode = "publication"
@@ -247,7 +247,7 @@ def config_view(live, ws, config_path) -> RunPlan | None:
         initial_selected=set(saved.cell_ids) if saved else None,
         initial_verbosity=saved.verbosity if saved else None,
         initial_mode=saved.mode if saved else "publication",
-        initial_repeats=saved.repeats if saved else 5,
+        initial_repeats=saved.repeats if saved else 7,
         initial_iterations=saved.iterations if saved else None,
     )
     # First visit: snap to the publication preset so the user lands on a

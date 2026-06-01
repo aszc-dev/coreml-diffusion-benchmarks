@@ -101,7 +101,7 @@ def run(
     ws = Workspace.resolve(workspace)
     # Fall back to the saved plan's multi-run settings when the CLI didn't
     # override them — the TUI's default plan is publication-grade
-    # (repeats=5), and a bare ``sdbench run`` ought to honour that rather
+    # (repeats=7), and a bare ``sdbench run`` ought to honour that rather
     # than silently regress to single-pass.
     if use_plan and ws.runplan_path.exists():
         try:
