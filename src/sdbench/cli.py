@@ -369,15 +369,26 @@ def cleanup(
 
 @app.command("power")
 def power(
-    power_log: Annotated[Path, typer.Option("--power-log")],
+    power_log: Annotated[Path, typer.Option("--power-log", help="Single-pass plist. Ignored when --session is given (each pass has its own plist).")] = Path("results/raw/none.plist"),
     input_path: Annotated[Path, typer.Option("--input", "-i")] = Path("results/data/results.jsonl"),
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("config/matrix.yaml"),
     output_dir: Annotated[Path, typer.Option("--output-dir", "-o")] = Path("results/tables"),
+    session: Annotated[Path | None, typer.Option("--session", help="Re-apply power to a whole multi-run session directory (sessions/<id>/). Each pass is realigned from its own plist in --raw-dir, then re-aggregated. This is what the report validator reads, so single-file --input mode does NOT fix a multi-run bundle.")] = None,
+    raw_dir: Annotated[Path, typer.Option("--raw-dir", help="Directory holding per-run <run_id>-powermetrics.plist files (for --session).")] = Path("results/raw"),
 ) -> None:
     """Align a powermetrics capture to the timed windows and fill power into the records.
 
-    Run after the benchmark (the sampler runs concurrently, so power is post-hoc). (R6.2-R6.4)"""
+    Run after the benchmark (the sampler runs concurrently, so power is post-hoc). (R6.2-R6.4)
+
+    Two modes:
+    - default: realign one --power-log plist into a single --input JSONL.
+    - --session: realign every pass JSONL in a session dir from its own plist
+      and rebuild sessions/<id>/aggregated.jsonl, which is the artifact the
+      report validator checks for energy spread (R5.4)."""
     cfg = load_benchmark_config(config)
+    if session is not None:
+        _apply_power_to_session(session, raw_dir, cfg, output_dir)
+        return
     records = load_jsonl(input_path)
     samples = parse_powermetrics_plist(power_log)
     updated = apply_power_to_records(records, samples, cfg.power.baseline_seconds, cfg.iterations)
@@ -389,6 +400,51 @@ def power(
     manifest = _load_manifest_for_tables(manifest_path)
     write_summary_tables(updated, output_dir, manifest=manifest)
     typer.echo(f"Applied {len(samples)} power samples to {len(updated)} records in {input_path}")
+
+
+def _apply_power_to_session(session_dir: Path, raw_dir: Path, cfg: BenchmarkConfig, output_dir: Path) -> None:
+    """Realign every pass in a session from its own plist, then re-aggregate.
+
+    The multi-run aggregate (sessions/<id>/aggregated.jsonl) is computed from the
+    per-pass JSONLs, so realigning only the top-level results.jsonl leaves the
+    aggregate — and the validator's energy-spread check — on stale numbers. We
+    realign each run-NN.jsonl from results/raw/<run_id>-powermetrics.plist, then
+    recompute the aggregate the same way run_session does."""
+    from sdbench.aggregate import aggregate_session
+
+    pass_paths = sorted(session_dir.glob("run-*.jsonl"))
+    if not pass_paths:
+        raise typer.BadParameter(f"no run-*.jsonl passes under {session_dir}")
+    pass_records: list[list] = []
+    n_samples = 0
+    for pass_path in pass_paths:
+        records = load_jsonl(pass_path)
+        run_id = next((r.run_id for r in records if r.run_id), None)
+        plist = raw_dir / f"{run_id}-powermetrics.plist"
+        if not plist.exists():
+            typer.echo(f"[warn] {pass_path.name}: plist {plist.name} missing — leaving pass unchanged")
+            pass_records.append(records)
+            continue
+        samples = parse_powermetrics_plist(plist)
+        n_samples += len(samples)
+        updated = apply_power_to_records(records, samples, cfg.power.baseline_seconds, cfg.iterations)
+        write_jsonl(updated, pass_path)
+        pass_records.append(updated)
+    flat = [rec for sub in pass_records for rec in sub]
+    aggregated = aggregate_session(flat)
+    write_jsonl(aggregated, session_dir / "aggregated.jsonl")
+    # Tables are the human-facing view; regenerate them from the *aggregate*
+    # (one median row per cell) so they don't keep showing the stale per-pass
+    # dump. Resolve the environment manifest next to the bundle root (two levels
+    # up from sessions/<id>/) so captions survive.
+    manifest = _load_manifest_for_tables(session_dir.parent.parent / "tables" / "environment.json")
+    if manifest is None:
+        manifest = _load_manifest_for_tables(session_dir.parent.parent / "environment.json")
+    write_summary_tables(aggregated, output_dir, manifest=manifest)
+    typer.echo(
+        f"Realigned {len(pass_paths)} passes ({n_samples} samples), rebuilt "
+        f"{session_dir / 'aggregated.jsonl'} and tables in {output_dir}"
+    )
 
 
 def _load_manifest_for_tables(path: Path):
