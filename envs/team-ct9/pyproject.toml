@@ -3,13 +3,17 @@ name = "sdbench-team-ct9"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "coreml-diffusion==0.1.2",
+  "coreml-diffusion==0.1.3",
   "coremltools>=9,<10",
   "diffusers==0.32.2",
   "numpy==2.1.3",
   "safetensors==0.5.3",
   "torch==2.7.0",
   "transformers==4.49.0",
+  # Image-space ablation (IMAGE_ABLATION_SPEC.md) metrics + grid output.
+  "torchmetrics[image]==1.6.1",
+  "torchvision==0.22.0",
+  "pillow==11.1.0",
 ]
 
 [build-system]
