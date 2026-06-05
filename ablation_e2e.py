@@ -9,11 +9,11 @@ Reuses the drop-in adapters from `coreml_diffusion.inference`
 diffusers component contracts. Unlike `build_pipeline`, this assembles configs by
 hand so the UNet can stay on torch (needed for the VAE-only / CLIP-only configs).
 
-NOT YET RUN ON-DEVICE. Written against the contracts visible in the repo; the
-construction points flagged `# VERIFY` need a smoke check on Apple Silicon before
-trusting numbers. Requires: torch, diffusers, coreml_diffusion, and
+Run on-device (Apple Silicon, CPU_AND_NE): see `runs/ablation-ct9-full/` for the
+full 10-prompt x 3-seed output (120 rows, summary, grids) and `provenance.json`
+for the pinned toolchain. Requires: torch, diffusers, coreml_diffusion, and
 `torchmetrics[image]` + transformers for the metrics (uv add torchmetrics
-torchvision transformers).
+torchvision transformers). Run inside `envs/team-ct9` (coremltools 9 toolchain).
 
 Usage:
     uv run python ablation_e2e.py \
@@ -116,6 +116,45 @@ def _git_sha() -> str | None:
         return None
 
 
+# Packages whose version determines whether this run reproduces: the converter
+# toolchain (coreml-diffusion + coremltools), the inference stack (diffusers /
+# torch), and the metric backbones (LPIPS net, CLIP via transformers). A bump in
+# any of these can move the numbers, so they are pinned in provenance.
+_PROVENANCE_PACKAGES = (
+    "coreml-diffusion",
+    "coremltools",
+    "diffusers",
+    "torch",
+    "torchmetrics",
+    "transformers",
+    "numpy",
+    "pillow",
+)
+
+
+def _pkg_versions() -> dict[str, str | None]:
+    from importlib.metadata import PackageNotFoundError, version
+
+    out: dict[str, str | None] = {}
+    for name in _PROVENANCE_PACKAGES:
+        try:
+            out[name] = version(name)
+        except PackageNotFoundError:
+            out[name] = None
+    return out
+
+
+def _platform_info() -> dict[str, str]:
+    import platform
+
+    return {
+        "python": platform.python_version(),
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+    }
+
+
 # ---- Pipeline assembly (A1, A2) ---------------------------------------------
 
 
@@ -140,7 +179,7 @@ def build_config_pipeline(cfg: SwapConfig, artifacts: Artifacts, compute_unit: s
     pipe.safety_checker = None  # A2.6
 
     if cfg.unet:
-        # VERIFY: package must be converted at batch_size=2 for guided CFG (A2.5).
+        # NOTE: package must be converted at batch_size=2 for guided CFG (A2.5).
         pipe.unet = CoreMLUNet(
             artifacts.unet_mlpackage, pipe.unet, ModelVersion.SD15, compute_unit
         )
@@ -340,6 +379,8 @@ def run(artifacts: Artifacts, out_dir: Path, compute_unit: str,
         "text_encoder_mlpackage": artifacts.text_encoder_mlpackage,
         "compute_unit": compute_unit,
         "git_sha": _git_sha(),
+        "package_versions": _pkg_versions(),
+        "platform": _platform_info(),
         "gen_params": asdict(params),
     }
     (out_dir / "provenance.json").write_text(json.dumps(provenance, indent=2))
